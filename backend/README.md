@@ -203,6 +203,7 @@ No patient account role is included.
 - `sql/07_auth_account_recovery_hotfix.sql`
 - `sql/07_service_records_and_documents_rules_hotfix.sql`
 - `sql/08_patient_code_sequence_hotfix.sql`
+- `sql/15_verification_codes_hotfix.sql`
 - `sql/09_auth_pgcrypto_search_path_hotfix.sql`
 
 ### Run Order (Supabase SQL Editor)

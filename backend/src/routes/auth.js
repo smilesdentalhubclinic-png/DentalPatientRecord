@@ -14,9 +14,6 @@ const {
 } = require('../lib/mailer');
 
 const router = express.Router();
-const emailChangeVerificationStore = new Map();
-const staffOnboardingVerificationStore = new Map();
-const passwordResetVerificationStore = new Map();
 const failedLoginAlertStore = new Map();
 const EMAIL_CHANGE_CODE_EXPIRY_MS = 10 * 60 * 1000;
 const EMAIL_CHANGE_MAX_ATTEMPTS = 5;
@@ -24,6 +21,11 @@ const PASSWORD_RESET_CODE_EXPIRY_MS = 10 * 60 * 1000;
 const PASSWORD_RESET_MAX_ATTEMPTS = 5;
 const FAILED_LOGIN_ALERT_THRESHOLD = 4;
 const FAILED_LOGIN_TRACKING_WINDOW_MS = 30 * 60 * 1000;
+const VERIFICATION_PURPOSE = Object.freeze({
+  EMAIL_CHANGE: 'email_change',
+  STAFF_ONBOARDING: 'staff_onboarding',
+  PASSWORD_RESET: 'password_reset',
+});
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -45,6 +47,85 @@ function isPlaceholderStaffEmail(email) {
 
 function createSixDigitCode() {
   return crypto.randomInt(100000, 1000000).toString();
+}
+
+function hashVerificationCode(code) {
+  return crypto.createHash('sha256').update(normalizeString(code)).digest('hex');
+}
+
+function getVerificationMetadata(record) {
+  return record?.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+    ? record.metadata
+    : {};
+}
+
+async function deleteVerificationRecord({ purpose, userId = null, email = '' }) {
+  const normalizedEmail = normalizeString(email).toLowerCase();
+  const serviceClient = createSupabaseClient({ useServiceRole: true });
+  let query = serviceClient
+    .from('verification_codes')
+    .delete()
+    .eq('purpose', purpose);
+
+  if (userId) {
+    query = query.eq('user_id', userId);
+  } else {
+    query = query.eq('email', normalizedEmail);
+  }
+
+  const { error } = await query;
+  if (error) throw error;
+}
+
+async function storeVerificationRecord({ purpose, userId = null, email, code, expiresInMs, metadata = {} }) {
+  const normalizedEmail = normalizeString(email).toLowerCase();
+  const serviceClient = createSupabaseClient({ useServiceRole: true });
+
+  await deleteVerificationRecord({ purpose, userId, email: normalizedEmail });
+
+  const { error } = await serviceClient
+    .from('verification_codes')
+    .insert({
+      purpose,
+      user_id: userId || null,
+      email: normalizedEmail,
+      code_hash: hashVerificationCode(code),
+      metadata,
+      attempts: 0,
+      expires_at: new Date(Date.now() + expiresInMs).toISOString(),
+    });
+
+  if (error) throw error;
+}
+
+async function getVerificationRecord({ purpose, userId = null, email = '' }) {
+  const normalizedEmail = normalizeString(email).toLowerCase();
+  const serviceClient = createSupabaseClient({ useServiceRole: true });
+  let query = serviceClient
+    .from('verification_codes')
+    .select('id, purpose, user_id, email, code_hash, metadata, attempts, expires_at, created_at')
+    .eq('purpose', purpose)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (userId) {
+    query = query.eq('user_id', userId);
+  } else {
+    query = query.eq('email', normalizedEmail);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return Array.isArray(data) && data.length > 0 ? data[0] : null;
+}
+
+async function incrementVerificationAttempts(recordId, attempts) {
+  const serviceClient = createSupabaseClient({ useServiceRole: true });
+  const { error } = await serviceClient
+    .from('verification_codes')
+    .update({ attempts })
+    .eq('id', recordId);
+  if (error) throw error;
 }
 
 function getFailedLoginAlertEntry(email) {
@@ -370,6 +451,10 @@ router.post('/login', async (req, res) => {
 
 router.post('/forgot-password', async (req, res) => {
   try {
+    if (!config.supabaseServiceRoleKey) {
+      return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required for password resets.' });
+    }
+
     const login = normalizeString(req.body?.login);
 
     if (!login) {
@@ -391,13 +476,13 @@ router.post('/forgot-password', async (req, res) => {
     }
 
     const code = createSixDigitCode();
-    const expiresAt = Date.now() + PASSWORD_RESET_CODE_EXPIRY_MS;
 
-    passwordResetVerificationStore.set(resolvedEmail, {
-      code,
+    await storeVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
       userId: existingAuthUser.id,
-      expiresAt,
-      attempts: 0,
+      email: resolvedEmail,
+      code,
+      expiresInMs: PASSWORD_RESET_CODE_EXPIRY_MS,
     });
 
     await sendPasswordResetVerificationEmail({
@@ -418,6 +503,10 @@ router.post('/forgot-password', async (req, res) => {
 
 router.post('/verify-reset-code', async (req, res) => {
   try {
+    if (!config.supabaseServiceRoleKey) {
+      return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required for password resets.' });
+    }
+
     const login = normalizeString(req.body?.login);
     const code = normalizeString(req.body?.code);
 
@@ -433,21 +522,29 @@ router.post('/verify-reset-code', async (req, res) => {
       return res.status(404).json({ error: 'No active staff account found for that login.' });
     }
 
-    const storedVerification = passwordResetVerificationStore.get(resolvedEmail);
+    const storedVerification = await getVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+      email: resolvedEmail,
+    });
     if (!storedVerification) {
       return res.status(400).json({ error: 'No pending password reset request was found.' });
     }
-    if (storedVerification.expiresAt < Date.now()) {
-      passwordResetVerificationStore.delete(resolvedEmail);
+    if (new Date(storedVerification.expires_at).getTime() < Date.now()) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+        email: resolvedEmail,
+      });
       return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
     }
     if (storedVerification.attempts >= PASSWORD_RESET_MAX_ATTEMPTS) {
-      passwordResetVerificationStore.delete(resolvedEmail);
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+        email: resolvedEmail,
+      });
       return res.status(400).json({ error: 'Too many invalid attempts. Please request a new code.' });
     }
-    if (storedVerification.code !== code) {
-      storedVerification.attempts += 1;
-      passwordResetVerificationStore.set(resolvedEmail, storedVerification);
+    if (storedVerification.code_hash !== hashVerificationCode(code)) {
+      await incrementVerificationAttempts(storedVerification.id, storedVerification.attempts + 1);
       return res.status(400).json({ error: 'Invalid verification code.' });
     }
 
@@ -578,32 +675,40 @@ router.post('/complete-forgot-password', async (req, res) => {
       return res.status(404).json({ error: 'No active staff account found for that login.' });
     }
 
-    const storedVerification = passwordResetVerificationStore.get(resolvedEmail);
+    const storedVerification = await getVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+      email: resolvedEmail,
+    });
     if (!storedVerification) {
       return res.status(400).json({ error: 'No pending password reset request was found.' });
     }
-    if (storedVerification.expiresAt < Date.now()) {
-      passwordResetVerificationStore.delete(resolvedEmail);
+    if (new Date(storedVerification.expires_at).getTime() < Date.now()) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+        email: resolvedEmail,
+      });
       return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
     }
     if (storedVerification.attempts >= PASSWORD_RESET_MAX_ATTEMPTS) {
-      passwordResetVerificationStore.delete(resolvedEmail);
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+        email: resolvedEmail,
+      });
       return res.status(400).json({ error: 'Too many invalid attempts. Please request a new code.' });
     }
-    if (storedVerification.code !== code) {
-      storedVerification.attempts += 1;
-      passwordResetVerificationStore.set(resolvedEmail, storedVerification);
+    if (storedVerification.code_hash !== hashVerificationCode(code)) {
+      await incrementVerificationAttempts(storedVerification.id, storedVerification.attempts + 1);
       return res.status(400).json({ error: 'Invalid verification code.' });
     }
 
     const serviceClient = createSupabaseClient({ useServiceRole: true });
     const passwordUpdatedAt = new Date().toISOString();
-    const { data: existingUserData, error: existingUserError } = await serviceClient.auth.admin.getUserById(storedVerification.userId);
+    const { data: existingUserData, error: existingUserError } = await serviceClient.auth.admin.getUserById(storedVerification.user_id);
     if (existingUserError || !existingUserData?.user) {
       return sendSupabaseError(res, existingUserError || { message: 'Unable to load user for password reset.' }, 400);
     }
 
-    const { error } = await serviceClient.auth.admin.updateUserById(storedVerification.userId, {
+    const { error } = await serviceClient.auth.admin.updateUserById(storedVerification.user_id, {
       password: newPassword,
       user_metadata: mergeUserMetadata(existingUserData.user, {
         password_updated_at: passwordUpdatedAt,
@@ -611,7 +716,10 @@ router.post('/complete-forgot-password', async (req, res) => {
     });
     if (error) return sendSupabaseError(res, error, 400);
 
-    passwordResetVerificationStore.delete(resolvedEmail);
+    await deleteVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
+      email: resolvedEmail,
+    });
 
     return res.json({
       message: 'Password updated successfully.',
@@ -705,13 +813,13 @@ router.post('/request-email-change-code', requireAccessToken, async (req, res) =
     }
 
     const code = createSixDigitCode();
-    const expiresAt = Date.now() + EMAIL_CHANGE_CODE_EXPIRY_MS;
 
-    emailChangeVerificationStore.set(requesterUserData.user.id, {
-      code,
+    await storeVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.EMAIL_CHANGE,
+      userId: requesterUserData.user.id,
       email: nextEmail,
-      expiresAt,
-      attempts: 0,
+      code,
+      expiresInMs: EMAIL_CHANGE_CODE_EXPIRY_MS,
     });
 
     await sendEmailChangeVerificationEmail({
@@ -750,13 +858,19 @@ router.post('/verify-email-change-code', requireAccessToken, async (req, res) =>
       return sendSupabaseError(res, requesterUserError || { message: 'Unable to resolve authenticated user.' }, 401);
     }
 
-    const storedVerification = emailChangeVerificationStore.get(requesterUserData.user.id);
+    const storedVerification = await getVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.EMAIL_CHANGE,
+      userId: requesterUserData.user.id,
+    });
     if (!storedVerification) {
       return res.status(400).json({ error: 'No active email verification request found.' });
     }
 
-    if (storedVerification.expiresAt < Date.now()) {
-      emailChangeVerificationStore.delete(requesterUserData.user.id);
+    if (new Date(storedVerification.expires_at).getTime() < Date.now()) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.EMAIL_CHANGE,
+        userId: requesterUserData.user.id,
+      });
       return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
     }
 
@@ -765,13 +879,15 @@ router.post('/verify-email-change-code', requireAccessToken, async (req, res) =>
     }
 
     if (storedVerification.attempts >= EMAIL_CHANGE_MAX_ATTEMPTS) {
-      emailChangeVerificationStore.delete(requesterUserData.user.id);
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.EMAIL_CHANGE,
+        userId: requesterUserData.user.id,
+      });
       return res.status(400).json({ error: 'Too many invalid attempts. Please request a new code.' });
     }
 
-    if (storedVerification.code !== code) {
-      storedVerification.attempts += 1;
-      emailChangeVerificationStore.set(requesterUserData.user.id, storedVerification);
+    if (storedVerification.code_hash !== hashVerificationCode(code)) {
+      await incrementVerificationAttempts(storedVerification.id, storedVerification.attempts + 1);
       return res.status(400).json({ error: 'Invalid verification code.' });
     }
 
@@ -780,7 +896,10 @@ router.post('/verify-email-change-code', requireAccessToken, async (req, res) =>
       email: nextEmail,
     });
 
-    emailChangeVerificationStore.delete(requesterUserData.user.id);
+    await deleteVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.EMAIL_CHANGE,
+      userId: requesterUserData.user.id,
+    });
 
     return res.json({
       message: 'Email updated successfully.',
@@ -793,6 +912,10 @@ router.post('/verify-email-change-code', requireAccessToken, async (req, res) =>
 
 router.post('/start-staff-onboarding', requireAccessToken, async (req, res) => {
   try {
+    if (!config.supabaseServiceRoleKey) {
+      return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY is required for onboarding verification.' });
+    }
+
     const nextEmail = normalizeString(req.body?.email).toLowerCase();
     const birthDate = normalizeString(req.body?.birthDate) || null;
     const mobileNumber = normalizeString(req.body?.mobileNumber);
@@ -839,16 +962,18 @@ router.post('/start-staff-onboarding', requireAccessToken, async (req, res) => {
     }
 
     const code = createSixDigitCode();
-    const expiresAt = Date.now() + EMAIL_CHANGE_CODE_EXPIRY_MS;
 
-    staffOnboardingVerificationStore.set(requesterUserData.user.id, {
-      code,
+    await storeVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.STAFF_ONBOARDING,
+      userId: requesterUserData.user.id,
       email: nextEmail,
-      birthDate,
-      mobileNumber,
-      address,
-      expiresAt,
-      attempts: 0,
+      code,
+      expiresInMs: EMAIL_CHANGE_CODE_EXPIRY_MS,
+      metadata: {
+        birthDate,
+        mobileNumber,
+        address,
+      },
     });
 
     await sendStaffOnboardingVerificationEmail({
@@ -888,25 +1013,34 @@ router.post('/verify-staff-onboarding', requireAccessToken, async (req, res) => 
     }
 
     const { requesterUserData, serviceClient } = requesterContext;
-    const storedVerification = staffOnboardingVerificationStore.get(requesterUserData.user.id);
+    const storedVerification = await getVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.STAFF_ONBOARDING,
+      userId: requesterUserData.user.id,
+    });
+    const storedMetadata = getVerificationMetadata(storedVerification);
 
     if (!storedVerification) {
       return res.status(400).json({ error: 'No pending onboarding verification found.' });
     }
-    if (storedVerification.expiresAt < Date.now()) {
-      staffOnboardingVerificationStore.delete(requesterUserData.user.id);
+    if (new Date(storedVerification.expires_at).getTime() < Date.now()) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.STAFF_ONBOARDING,
+        userId: requesterUserData.user.id,
+      });
       return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
     }
     if (storedVerification.email !== nextEmail) {
       return res.status(400).json({ error: 'The email does not match the pending verification request.' });
     }
     if (storedVerification.attempts >= EMAIL_CHANGE_MAX_ATTEMPTS) {
-      staffOnboardingVerificationStore.delete(requesterUserData.user.id);
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.STAFF_ONBOARDING,
+        userId: requesterUserData.user.id,
+      });
       return res.status(400).json({ error: 'Too many invalid attempts. Please request a new code.' });
     }
-    if (storedVerification.code !== code) {
-      storedVerification.attempts += 1;
-      staffOnboardingVerificationStore.set(requesterUserData.user.id, storedVerification);
+    if (storedVerification.code_hash !== hashVerificationCode(code)) {
+      await incrementVerificationAttempts(storedVerification.id, storedVerification.attempts + 1);
       return res.status(400).json({ error: 'Invalid verification code.' });
     }
 
@@ -918,14 +1052,17 @@ router.post('/verify-staff-onboarding', requireAccessToken, async (req, res) => 
     const { error: profileUpdateError } = await serviceClient
       .from('staff_profiles')
       .update({
-        birth_date: storedVerification.birthDate,
-        mobile_number: storedVerification.mobileNumber,
-        address: storedVerification.address,
+        birth_date: normalizeString(storedMetadata.birthDate) || null,
+        mobile_number: normalizeString(storedMetadata.mobileNumber) || null,
+        address: normalizeString(storedMetadata.address) || null,
       })
       .eq('user_id', requesterUserData.user.id);
     if (profileUpdateError) return sendSupabaseError(res, profileUpdateError);
 
-    staffOnboardingVerificationStore.delete(requesterUserData.user.id);
+    await deleteVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.STAFF_ONBOARDING,
+      userId: requesterUserData.user.id,
+    });
 
     return res.json({
       message: 'Staff onboarding completed successfully.',
