@@ -5,6 +5,18 @@
   "outputDirectory": "frontend/dist",
   "routes": [
     {
+      "src": "/api$",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/[...route].js"
+    },
+    {
+      "src": "/supabase/(.*)",
+      "dest": "/api/[...route].js"
+    },
+    {
       "handle": "filesystem"
     },
     {
