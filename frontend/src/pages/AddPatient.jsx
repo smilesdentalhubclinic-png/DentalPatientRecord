@@ -891,24 +891,24 @@ function AddPatient() {
               </button>
             </div>
 
-            <div className="form-grid">
-              <label>
+            <div className="form-grid patient-info-grid">
+              <label className="patient-span-3">
                 <span className="required-label">Last Name<span className="required-asterisk">*</span></span>
                 <input className={invalidPatientFields.lastName ? 'input-error' : ''} type="text" required value={patientInfo.lastName} onChange={(e) => setPatientField('lastName', toTitleCase(e.target.value))} />
               </label>
-              <label>
+              <label className="patient-span-3">
                 <span className="required-label">First Name<span className="required-asterisk">*</span></span>
                 <input className={invalidPatientFields.firstName ? 'input-error' : ''} type="text" required value={patientInfo.firstName} onChange={(e) => setPatientField('firstName', toTitleCase(e.target.value))} />
               </label>
-              <label>
+              <label className="patient-span-3">
                 Middle Name
                 <input type="text" value={patientInfo.middleName} onChange={(e) => setPatientInfo((p) => ({ ...p, middleName: toTitleCase(e.target.value) }))} />
               </label>
-              <label>
+              <label className="patient-span-3">
                 Suffix
                 <input type="text" value={patientInfo.suffix} onChange={(e) => setPatientInfo((p) => ({ ...p, suffix: toTitleCase(e.target.value) }))} />
               </label>
-              <label>
+              <label className="patient-span-3">
                 <span className="required-label">Birthdate<span className="required-asterisk">*</span></span>
                 <div className="birthdate-input-wrap">
                   <input
@@ -949,7 +949,7 @@ function AddPatient() {
                   />
                 </div>
               </label>
-              <label>
+              <label className="patient-span-3">
                 <span className="required-label">Sex<span className="required-asterisk">*</span></span>
                 <select
                   className={invalidPatientFields.sex ? 'input-error' : ''}
@@ -962,19 +962,19 @@ function AddPatient() {
                   {SEX_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                 </select>
               </label>
-              <label>
+              <label className="patient-span-3">
                 <span className="required-label">Age</span>
                 <input className={`is-locked ${invalidPatientFields.age ? 'input-error' : ''}`.trim()} type="text" required value={patientInfo.age} readOnly />
               </label>
-              <label>
+              <label className="patient-span-3">
                 Nickname
                 <input type="text" value={patientInfo.nickname} onChange={(e) => setPatientInfo((p) => ({ ...p, nickname: toTitleCase(e.target.value) }))} />
               </label>
-              <label className="span-3">
+              <label className="patient-span-5">
                 Email Address
                 <input type="text" value={patientInfo.email} onChange={(e) => setPatientInfo((p) => ({ ...p, email: e.target.value }))} />
               </label>
-              <label>
+              <label className="patient-span-3">
                 <span className="required-label">Civil Status<span className="required-asterisk">*</span></span>
                 <select
                   className={invalidPatientFields.civilStatus ? 'input-error' : ''}
@@ -987,11 +987,7 @@ function AddPatient() {
                   {CIVIL_STATUS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                 </select>
               </label>
-              <label className="span-3">
-                <span className="required-label">Current Address<span className="required-asterisk">*</span></span>
-                <input className={invalidPatientFields.currentAddress ? 'input-error' : ''} type="text" required value={patientInfo.currentAddress} onChange={(e) => setPatientField('currentAddress', toTitleCase(e.target.value))} />
-              </label>
-              <label>
+              <label className="patient-span-4">
                 <span className="required-label">Mobile Number<span className="required-asterisk">*</span></span>
                 <div className={`ph-mobile-field ${invalidPatientFields.mobileNumber ? 'input-error' : ''}`}>
                   <span className="ph-mobile-prefix">+63</span>
@@ -1015,11 +1011,15 @@ function AddPatient() {
                   />
                 </div>
               </label>
-              <label>
+              <label className="patient-span-6">
+                <span className="required-label">Current Address<span className="required-asterisk">*</span></span>
+                <input className={invalidPatientFields.currentAddress ? 'input-error' : ''} type="text" required value={patientInfo.currentAddress} onChange={(e) => setPatientField('currentAddress', toTitleCase(e.target.value))} />
+              </label>
+              <label className="patient-span-3">
                 <span className="required-label">Occupation<span className="required-asterisk">*</span></span>
                 <input className={invalidPatientFields.occupation ? 'input-error' : ''} type="text" required value={patientInfo.occupation} onChange={(e) => setPatientField('occupation', toTitleCase(e.target.value))} />
               </label>
-              <label className="span-3">
+              <label className="patient-span-3">
                 Office Address
                 <input type="text" value={patientInfo.officeAddress} onChange={(e) => setPatientInfo((p) => ({ ...p, officeAddress: toTitleCase(e.target.value) }))} />
               </label>

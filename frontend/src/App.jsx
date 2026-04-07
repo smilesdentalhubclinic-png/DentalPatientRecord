@@ -256,7 +256,6 @@ function AppRoutes() {
   useEffect(() => {
     const path = `${location.pathname || ''}${location.search || ''}${location.hash || ''}`
     if (!path || path === '/login' || path === '/reset-password') return
-    sessionStorage.setItem(LAST_PROTECTED_ROUTE_KEY, path)
   }, [location.hash, location.pathname, location.search])
 
   const loadAccessContext = useCallback(async (userId) => {
@@ -380,6 +379,7 @@ function AppRoutes() {
         const hasAccess = await loadAccessContext(userId)
         if (!hasAccess) {
           if (showLoading && isMounted) setIsBootstrapping(false)
+          if (isMounted) setIsLoginTransitioning(false)
           clearAuthState()
           setError('Account is not provisioned for system access.')
           await supabase.auth.signOut()
@@ -389,6 +389,9 @@ function AppRoutes() {
 
       if (isMounted && showLoading) {
         setIsBootstrapping(false)
+      }
+      if (isMounted) {
+        setIsLoginTransitioning(false)
       }
     }
 
@@ -1018,26 +1021,21 @@ function AppRoutes() {
         setError(sessionError.message || 'Unable to finish login.')
         return
       }
+
+      setIsLoginTransitioning(true)
     } catch (requestError) {
       setError(
         requestError?.code === BACKEND_STARTING_ERROR
           ? 'System is still starting. Please wait a moment and try again.'
           : 'Unable to log in right now.',
       )
+      setIsLoginTransitioning(false)
       return
     } finally {
       setIsLoggingIn(false)
     }
 
     setError('')
-    setIsLoginTransitioning(true)
-    const restorePath = sessionStorage.getItem(LAST_PROTECTED_ROUTE_KEY)
-    const nextPath = restorePath && restorePath !== '/login' ? restorePath : '/home'
-    await new Promise((resolve) => {
-      window.setTimeout(resolve, 650)
-    })
-    setIsLoginTransitioning(false)
-    navigate(nextPath, { replace: true })
   }
 
   const handleLogoutRequest = () => {

@@ -195,6 +195,12 @@ function Home({ currentProfile }) {
   const yAxisMax = Math.max(5, Math.ceil(currentChart.maxValue / 5) * 5)
   const yTicks = Array.from({ length: 6 }, (_, index) => yAxisMax - ((yAxisMax / 5) * index))
 
+  const getBarHeight = (value) => {
+    if (!value) return '0%'
+    const rawPercent = (value / yAxisMax) * 100
+    return `${Math.max(rawPercent, 5)}%`
+  }
+
   const toggleChartRange = (direction) => {
     setHoveredDay(null)
     setChartRange((previous) => {
@@ -279,12 +285,12 @@ function Home({ currentProfile }) {
                           <div className="weekly-bar-stack">
                             <div
                               className="weekly-bar female"
-                              style={{ height: `${(item.female / yAxisMax) * 100}%` }}
+                              style={{ height: getBarHeight(item.female) }}
                               title={`${item.label}: ${item.female} female`}
                             />
                             <div
                               className="weekly-bar male"
-                              style={{ height: `${(item.male / yAxisMax) * 100}%` }}
+                              style={{ height: getBarHeight(item.male) }}
                               title={`${item.label}: ${item.male} male`}
                             />
                           </div>
