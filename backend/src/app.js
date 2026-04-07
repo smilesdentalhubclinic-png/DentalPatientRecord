@@ -11,9 +11,23 @@ const rpcRoutes = require('./routes/rpc');
 const app = express();
 const supabaseOrigin = new URL(config.supabaseUrl).origin;
 
+function isAllowedVercelPreviewOrigin(origin) {
+  if (!origin) return false;
+
+  try {
+    const parsed = new URL(origin);
+    const hostname = parsed.hostname.toLowerCase();
+
+    return hostname.endsWith('.vercel.app') && hostname.includes('trylangvercel-backend');
+  } catch {
+    return false;
+  }
+}
+
 function isOriginAllowed(origin) {
   if (config.corsOrigins.includes('*')) return true;
-  return config.corsOrigins.includes(origin);
+  if (config.corsOrigins.includes(origin)) return true;
+  return isAllowedVercelPreviewOrigin(origin);
 }
 
 app.use(
