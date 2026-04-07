@@ -240,6 +240,7 @@ function AppRoutes() {
     mobileNumber: '',
     address: '',
   })
+  const [pendingStaffOnboarding, setPendingStaffOnboarding] = useState(null)
   const [staffOnboardingCode, setStaffOnboardingCode] = useState('')
   const [staffOnboardingError, setStaffOnboardingError] = useState('')
   const [staffOnboardingInfo, setStaffOnboardingInfo] = useState('')
@@ -315,6 +316,7 @@ function AppRoutes() {
     setShowPassword(false)
     setSession(null)
     setStaffOnboardingStep('details')
+    setPendingStaffOnboarding(null)
     setStaffOnboardingCode('')
     setStaffOnboardingError('')
     setStaffOnboardingInfo('')
@@ -500,16 +502,25 @@ function AppRoutes() {
 
     const profileUserId = profile?.user_id || null
     const isSameOnboardingUser = onboardingUserIdRef.current === profileUserId
+    const onboardingSource = isSameOnboardingUser && pendingStaffOnboarding
+      ? pendingStaffOnboarding
+      : {
+          email: isPlaceholderStaffEmail(profile?.email) ? '' : `${profile?.email || ''}`.trim(),
+          birthDate: profile?.birth_date || '',
+          mobileNumber: toPhilippineLocalMobileInput(profile?.mobile_number || ''),
+          address: profile?.address || '',
+        }
 
     setStaffOnboardingForm({
-      email: isPlaceholderStaffEmail(profile?.email) ? '' : `${profile?.email || ''}`.trim(),
-      birthDate: profile?.birth_date || '',
-      mobileNumber: toPhilippineLocalMobileInput(profile?.mobile_number || ''),
-      address: profile?.address || '',
+      email: onboardingSource.email,
+      birthDate: onboardingSource.birthDate,
+      mobileNumber: onboardingSource.mobileNumber,
+      address: onboardingSource.address,
     })
 
     if (!isSameOnboardingUser) {
       setStaffOnboardingStep('details')
+      setPendingStaffOnboarding(null)
       setStaffOnboardingCode('')
       setStaffOnboardingError('')
       setStaffOnboardingInfo('')
@@ -517,7 +528,7 @@ function AppRoutes() {
     }
 
     onboardingUserIdRef.current = profileUserId
-  }, [profile])
+  }, [pendingStaffOnboarding, profile])
 
   const handleStaffOnboardingFieldChange = (event) => {
     const { name, value } = event.target
@@ -605,9 +616,17 @@ function AppRoutes() {
         return
       }
 
+      const pendingDetails = {
+        email: `${payload?.email || email}`.trim().toLowerCase(),
+        birthDate,
+        mobileNumber,
+        address,
+      }
+
+      setPendingStaffOnboarding(pendingDetails)
       setStaffOnboardingStep('verify')
       setStaffOnboardingCode('')
-      setStaffOnboardingInfo(`Verification code sent to ${payload?.email || email}.`)
+      setStaffOnboardingInfo(`Verification code sent to ${pendingDetails.email}.`)
       setIsStaffOnboardingSubmitting(false)
     } catch (requestError) {
       setStaffOnboardingError(
@@ -622,10 +641,10 @@ function AppRoutes() {
   const handleStaffOnboardingResend = async () => {
     if (!supabase || !session?.user?.id) return
 
-    const email = staffOnboardingForm.email.trim().toLowerCase()
-    const birthDate = staffOnboardingForm.birthDate
-    const mobileNumber = normalizePhilippineMobile(staffOnboardingForm.mobileNumber)
-    const address = staffOnboardingForm.address.trim()
+    const email = pendingStaffOnboarding?.email?.trim().toLowerCase() || ''
+    const birthDate = pendingStaffOnboarding?.birthDate || ''
+    const mobileNumber = normalizePhilippineMobile(pendingStaffOnboarding?.mobileNumber || '')
+    const address = pendingStaffOnboarding?.address?.trim() || ''
 
     if (!email || !birthDate || !mobileNumber || !address) {
       setStaffOnboardingError('Please complete all required details before requesting a new code.')
@@ -665,8 +684,16 @@ function AppRoutes() {
         return
       }
 
+      const pendingDetails = {
+        email: `${payload?.email || email}`.trim().toLowerCase(),
+        birthDate,
+        mobileNumber,
+        address,
+      }
+
+      setPendingStaffOnboarding(pendingDetails)
       setStaffOnboardingCode('')
-      setStaffOnboardingInfo(`A new verification code was sent to ${payload?.email || email}.`)
+      setStaffOnboardingInfo(`A new verification code was sent to ${pendingDetails.email}.`)
       setIsStaffOnboardingResending(false)
     } catch (requestError) {
       setStaffOnboardingError(
@@ -683,10 +710,15 @@ function AppRoutes() {
     if (!supabase || !session?.user?.id) return
 
     const code = staffOnboardingCode.trim()
-    const email = staffOnboardingForm.email.trim().toLowerCase()
+    const email = pendingStaffOnboarding?.email?.trim().toLowerCase() || ''
 
     if (!code) {
       setStaffOnboardingError('Please enter the verification code sent to your email.')
+      return
+    }
+
+    if (!email) {
+      setStaffOnboardingError('Your verification session expired. Please request a new code.')
       return
     }
 
@@ -722,6 +754,7 @@ function AppRoutes() {
 
       await loadAccessContext(session.user.id)
       setStaffOnboardingStep('details')
+      setPendingStaffOnboarding(null)
       setStaffOnboardingCode('')
       setStaffOnboardingInfo('')
       setIsStaffOnboardingVerifying(false)
@@ -1058,6 +1091,14 @@ function AppRoutes() {
   const handleStaffOnboardingBackToDetails = (event) => {
     event?.preventDefault?.()
     event?.stopPropagation?.()
+    if (pendingStaffOnboarding) {
+      setStaffOnboardingForm({
+        email: pendingStaffOnboarding.email,
+        birthDate: pendingStaffOnboarding.birthDate,
+        mobileNumber: pendingStaffOnboarding.mobileNumber,
+        address: pendingStaffOnboarding.address,
+      })
+    }
     setStaffOnboardingStep('details')
     setStaffOnboardingCode('')
     setStaffOnboardingError('')
