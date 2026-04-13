@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import { useNavigate } from 'react-router-dom'
 import FilterDateInput from '../components/FilterDateInput'
 import SortDirectionIcon from '../components/SortDirectionIcon'
@@ -358,7 +359,7 @@ function PatientRecords() {
           </div>
         </div>
 
-        {error ? <p className="error">{error}</p> : null}
+        <ErrorModal message={error} onClose={() => setError('')} />
         {loading ? <p>Loading patient records...</p> : null}
 
         <div className="records-table patient-records-table">

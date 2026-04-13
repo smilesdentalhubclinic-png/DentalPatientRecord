@@ -31,6 +31,12 @@ function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function isLetterOnlyName(value, { allowEmpty = false } = {}) {
+  const normalized = normalizeString(value).replace(/\s+/g, ' ');
+  if (!normalized) return allowEmpty;
+  return /^[A-Za-z]+(?: [A-Za-z]+)*$/.test(normalized);
+}
+
 function mergeUserMetadata(user, updates = {}) {
   return {
     ...(user?.user_metadata && typeof user.user_metadata === 'object' ? user.user_metadata : {}),
@@ -1148,6 +1154,9 @@ router.post('/admin-create-user', requireAccessToken, async (req, res) => {
 
     if (!email || !password || !fullName || !username || !role) {
       return res.status(400).json({ error: 'email, password, fullName, username, and role are required.' });
+    }
+    if (!isLetterOnlyName(firstName) || !isLetterOnlyName(lastName) || !isLetterOnlyName(middleName, { allowEmpty: true })) {
+      return res.status(400).json({ error: 'First name, last name, and middle name must contain letters only.' });
     }
     if (!EMAIL_PATTERN.test(email)) {
       return res.status(400).json({ error: 'Invalid email format.' });

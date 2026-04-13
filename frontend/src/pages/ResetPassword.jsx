@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
 
@@ -121,6 +122,7 @@ function ResetPassword() {
 
   return (
     <div className="page" style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#eef5f9', padding: '1.5rem' }}>
+      <ErrorModal message={error} onClose={() => setError('')} />
       <div style={{ width: '100%', maxWidth: '460px', background: '#fff', borderRadius: '16px', boxShadow: '0 18px 40px rgba(10, 32, 44, 0.16)', padding: '1.5rem' }}>
         <h2 style={{ marginTop: 0, marginBottom: '0.75rem', color: '#12354b' }}>Reset Password</h2>
         {loadingLink ? <p style={{ marginTop: 0 }}>Validating reset link...</p> : null}
@@ -144,7 +146,6 @@ function ResetPassword() {
                 autoComplete="new-password"
               />
             </label>
-            {error ? <p className="error">{error}</p> : null}
             {success ? <p style={{ margin: 0, color: '#1f7a35', fontSize: '0.9rem' }}>{success}</p> : null}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem' }}>
               <button type="button" onClick={goToLogin}>Back to login</button>

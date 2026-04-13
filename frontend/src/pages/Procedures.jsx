@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
 
@@ -19,6 +20,11 @@ const toTitleCase = (value) => {
   return raw
     .toLowerCase()
     .replace(/\b[a-z]/g, (match) => match.toUpperCase())
+}
+
+const sanitizeServiceNameInput = (value) => {
+  const raw = `${value ?? ''}`
+  return raw.replace(/[^a-zA-Z\s&'-]/g, '')
 }
 
 const normalizeLegendCode = (value) => `${value ?? ''}`.trim().toUpperCase()
@@ -195,7 +201,7 @@ function Procedures({ currentProfile }) {
   }
 
   const addService = async () => {
-    const serviceName = toTitleCase(addServiceName.trim())
+    const serviceName = toTitleCase(sanitizeServiceNameInput(addServiceName).trim())
     const price = parsePrice(addServicePrice)
     if (!serviceName || price === null) {
       showErrorModal('Enter a valid service name and non-negative price.')
@@ -268,7 +274,7 @@ function Procedures({ currentProfile }) {
     if (!selectedItem) return
 
     if (tab === 'services') {
-      const nextName = toTitleCase(editServiceName.trim())
+      const nextName = toTitleCase(sanitizeServiceNameInput(editServiceName).trim())
       const nextPrice = parsePrice(editServicePrice)
       if (!nextName || nextPrice === null) {
         showErrorModal('Enter a valid service name and non-negative price.')
@@ -403,7 +409,7 @@ function Procedures({ currentProfile }) {
           </button>
         </div>
 
-        {error ? <p className="error">{error}</p> : null}
+        <ErrorModal message={error} onClose={() => setError('')} />
         {loading ? <p>Loading procedures...</p> : null}
 
         <div className="grid-two procedures-grid">
@@ -466,7 +472,7 @@ function Procedures({ currentProfile }) {
                   value={tab === 'services' ? addServiceName : addConditionName}
                   onChange={(event) =>
                     tab === 'services'
-                      ? setAddServiceName(toTitleCase(event.target.value))
+                      ? setAddServiceName(toTitleCase(sanitizeServiceNameInput(event.target.value)))
                       : setAddConditionName(toTitleCase(event.target.value))
                   }
                 />
@@ -510,7 +516,7 @@ function Procedures({ currentProfile }) {
           <div className="pr-modal-head"><h2>Update</h2><button type="button" onClick={closeModal}>X</button></div>
           <div className="pr-modal-body">
             <div className="stack">
-              <label>Service Name<input type="text" value={editServiceName} onChange={(e) => setEditServiceName(toTitleCase(e.target.value))} /></label>
+              <label>Service Name<input type="text" value={editServiceName} onChange={(e) => setEditServiceName(toTitleCase(sanitizeServiceNameInput(e.target.value)))} /></label>
               <label>
                 Price (PHP)
                 <input

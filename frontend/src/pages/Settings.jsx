@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import clinicLogo from '../assets/DENTAL LOGO.png'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
+import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 
 const ROLE_LABELS = {
   admin: 'Admin',
@@ -127,6 +129,8 @@ const buildFullName = ({ firstName, middleName, lastName, suffix }) => (
     .replace(/\s+/g, ' ')
     .trim()
 )
+
+const formatLetterNameInput = (value) => sanitizeLetterNameInput(value)
 
 const formatProfileFullName = (profile) => (
   [
@@ -254,6 +258,10 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
 
     if (!firstName || !lastName || !username) {
       setError('First name, last name, and username are required.')
+      return
+    }
+    if (!isValidLetterName(firstName) || !isValidLetterName(lastName) || !isValidLetterName(middleName, { allowEmpty: true })) {
+      setError('First name, last name, and middle name must contain letters only.')
       return
     }
 
@@ -592,17 +600,17 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
                 <div className="history-top-grid settings-grid settings-profile-grid">
                   <label>
                     Last Name
-                    <input type="text" value={isEditingProfile ? profileForm.lastName : parsedProfileName.lastName} readOnly={!isEditingProfile} onChange={(event) => setProfileForm((previous) => ({ ...previous, lastName: event.target.value }))} />
+                    <input type="text" value={isEditingProfile ? profileForm.lastName : parsedProfileName.lastName} readOnly={!isEditingProfile} onChange={(event) => setProfileForm((previous) => ({ ...previous, lastName: formatLetterNameInput(event.target.value) }))} />
                   </label>
 
                   <label>
                     First Name
-                    <input type="text" value={isEditingProfile ? profileForm.firstName : parsedProfileName.firstName} readOnly={!isEditingProfile} onChange={(event) => setProfileForm((previous) => ({ ...previous, firstName: event.target.value }))} />
+                    <input type="text" value={isEditingProfile ? profileForm.firstName : parsedProfileName.firstName} readOnly={!isEditingProfile} onChange={(event) => setProfileForm((previous) => ({ ...previous, firstName: formatLetterNameInput(event.target.value) }))} />
                   </label>
 
                   <label>
                     Middle Name
-                    <input type="text" value={isEditingProfile ? profileForm.middleName : parsedProfileName.middleName} readOnly={!isEditingProfile} onChange={(event) => setProfileForm((previous) => ({ ...previous, middleName: event.target.value }))} />
+                    <input type="text" value={isEditingProfile ? profileForm.middleName : parsedProfileName.middleName} readOnly={!isEditingProfile} onChange={(event) => setProfileForm((previous) => ({ ...previous, middleName: formatLetterNameInput(event.target.value) }))} />
                   </label>
 
                   <label>
@@ -736,7 +744,7 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
                     </ul>
                   </div>
 
-                  {error ? <p className="nav-password-error settings-error">{error}</p> : null}
+                  <ErrorModal message={error} onClose={() => setError('')} />
 
                   <div className="settings-actions">
                     <button type="submit" className="primary" disabled={isSubmitting}>
@@ -795,7 +803,7 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
                   />
                 </label>
 
-                {emailVerificationError ? <p className="nav-password-error settings-error">{emailVerificationError}</p> : null}
+                <ErrorModal message={emailVerificationError} onClose={() => setEmailVerificationError('')} />
                 {emailVerificationInfo ? <p className="onboarding-success">{emailVerificationInfo}</p> : null}
 
                 <div className="modal-actions">

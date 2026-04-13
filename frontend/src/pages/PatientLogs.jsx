@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import FilterDateInput from '../components/FilterDateInput'
 import SortDirectionIcon from '../components/SortDirectionIcon'
 import { supabase } from '../lib/supabaseClient'
@@ -183,7 +184,7 @@ function PatientLogs() {
           </div>
         </div>
 
-        {error ? <p className="error">{error}</p> : null}
+        <ErrorModal message={error} onClose={() => setError('')} />
         {loading ? <p>Loading patient logs...</p> : null}
 
         {(() => {

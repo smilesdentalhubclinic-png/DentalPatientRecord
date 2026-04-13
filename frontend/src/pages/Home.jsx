@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 
 const formatDayLabel = (date) => date.toLocaleDateString('en-US', { weekday: 'short' })
@@ -238,7 +239,7 @@ function Home({ currentProfile }) {
               <span className="legend-item female">Female</span>
             </div>
 
-            {error ? <p className="error">{error}</p> : null}
+            <ErrorModal message={error} onClose={() => setError('')} />
 
             <div className="chart-placeholder">
               <button

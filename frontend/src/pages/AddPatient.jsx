@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 
 const STEPS = ['Patient Information', 'Medical History', 'Dental History', 'Authorization']
 const SEX_OPTIONS = ['Male', 'Female']
@@ -462,10 +463,20 @@ function AddPatient() {
     const hasInvalidMobile = !/^9\d{9}$/.test(`${patientInfo.mobileNumber || ''}`)
     const hasInvalidGuardianMobile = isMinor && !/^9\d{9}$/.test(`${patientInfo.guardianMobileNumber || ''}`)
     const hasInvalidBirthdateAge = Boolean(patientInfo.birthdate && patientInfo.birthdate > maxBirthdateIso)
+    const hasInvalidFirstName = !isValidLetterName(patientInfo.firstName)
+    const hasInvalidLastName = !isValidLetterName(patientInfo.lastName)
+    const hasInvalidMiddleName = !isValidLetterName(patientInfo.middleName, { allowEmpty: true })
+    const hasInvalidOccupation = !isValidLetterName(patientInfo.occupation)
+    const hasInvalidGuardianOccupation = isMinor && !isValidLetterName(patientInfo.guardianOccupation)
 
     if (hasInvalidMobile) nextInvalidFields.mobileNumber = true
     if (hasInvalidGuardianMobile) nextInvalidFields.guardianMobileNumber = true
     if (hasInvalidBirthdateAge) nextInvalidFields.birthdate = true
+    if (hasInvalidFirstName) nextInvalidFields.firstName = true
+    if (hasInvalidLastName) nextInvalidFields.lastName = true
+    if (hasInvalidMiddleName) nextInvalidFields.middleName = true
+    if (hasInvalidOccupation) nextInvalidFields.occupation = true
+    if (hasInvalidGuardianOccupation) nextInvalidFields.guardianOccupation = true
     setInvalidPatientFields(nextInvalidFields)
 
     if (hasMissingRequiredField) {
@@ -485,6 +496,16 @@ function AddPatient() {
 
     if (hasInvalidBirthdateAge) {
       setValidationMessage('Patient must be at least 2 years old.')
+      return false
+    }
+
+    if (hasInvalidFirstName || hasInvalidLastName || hasInvalidMiddleName) {
+      setValidationMessage('First name, last name, and middle name must contain letters only.')
+      return false
+    }
+
+    if (hasInvalidOccupation || hasInvalidGuardianOccupation) {
+      setValidationMessage('Occupation fields must contain letters only.')
       return false
     }
 
@@ -686,7 +707,10 @@ function AddPatient() {
     return raw.toLowerCase().replace(/\b[a-z]/g, (match) => match.toUpperCase())
   }
 
+  const formatLetterNameInput = (value) => toTitleCase(sanitizeLetterNameInput(value))
+
   const confirmSubmission = async () => {
+    if (!validatePatientInformationStep()) return
     setIsSubmitting(true)
     const normalizedMedicalNotes = Object.fromEntries(
       Object.entries(medicalNotes || {}).map(([key, value]) => [key, toTitleCase(value)]),
@@ -894,15 +918,15 @@ function AddPatient() {
             <div className="form-grid patient-info-grid">
               <label className="patient-span-3">
                 <span className="required-label">Last Name<span className="required-asterisk">*</span></span>
-                <input className={invalidPatientFields.lastName ? 'input-error' : ''} type="text" required value={patientInfo.lastName} onChange={(e) => setPatientField('lastName', toTitleCase(e.target.value))} />
+                <input className={invalidPatientFields.lastName ? 'input-error' : ''} type="text" required value={patientInfo.lastName} onChange={(e) => setPatientField('lastName', formatLetterNameInput(e.target.value))} />
               </label>
               <label className="patient-span-3">
                 <span className="required-label">First Name<span className="required-asterisk">*</span></span>
-                <input className={invalidPatientFields.firstName ? 'input-error' : ''} type="text" required value={patientInfo.firstName} onChange={(e) => setPatientField('firstName', toTitleCase(e.target.value))} />
+                <input className={invalidPatientFields.firstName ? 'input-error' : ''} type="text" required value={patientInfo.firstName} onChange={(e) => setPatientField('firstName', formatLetterNameInput(e.target.value))} />
               </label>
               <label className="patient-span-3">
                 Middle Name
-                <input type="text" value={patientInfo.middleName} onChange={(e) => setPatientInfo((p) => ({ ...p, middleName: toTitleCase(e.target.value) }))} />
+                <input className={invalidPatientFields.middleName ? 'input-error' : ''} type="text" value={patientInfo.middleName} onChange={(e) => setPatientField('middleName', formatLetterNameInput(e.target.value))} />
               </label>
               <label className="patient-span-3">
                 Suffix
@@ -1017,7 +1041,7 @@ function AddPatient() {
               </label>
               <label className="patient-span-3">
                 <span className="required-label">Occupation<span className="required-asterisk">*</span></span>
-                <input className={invalidPatientFields.occupation ? 'input-error' : ''} type="text" required value={patientInfo.occupation} onChange={(e) => setPatientField('occupation', toTitleCase(e.target.value))} />
+                <input className={invalidPatientFields.occupation ? 'input-error' : ''} type="text" required value={patientInfo.occupation} onChange={(e) => setPatientField('occupation', formatLetterNameInput(e.target.value))} />
               </label>
               <label className="patient-span-3">
                 Office Address
@@ -1059,7 +1083,7 @@ function AddPatient() {
                   </label>
                   <label>
                     <span className="required-label">Occupation<span className="required-asterisk">*</span></span>
-                    <input className={invalidPatientFields.guardianOccupation ? 'input-error' : ''} type="text" required value={patientInfo.guardianOccupation} onChange={(e) => setPatientField('guardianOccupation', toTitleCase(e.target.value))} />
+                    <input className={invalidPatientFields.guardianOccupation ? 'input-error' : ''} type="text" required value={patientInfo.guardianOccupation} onChange={(e) => setPatientField('guardianOccupation', formatLetterNameInput(e.target.value))} />
                   </label>
                   <label className="span-3">
                     Office Address

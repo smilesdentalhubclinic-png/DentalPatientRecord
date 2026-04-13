@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import FilterDateInput from '../components/FilterDateInput'
 import SortDirectionIcon from '../components/SortDirectionIcon'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
+import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 
 const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
@@ -91,6 +93,8 @@ const toTitleCase = (value) => {
   if (!raw.trim()) return raw
   return raw.toLowerCase().replace(/\b[a-z]/g, (match) => match.toUpperCase())
 }
+
+const formatLetterNameInput = (value) => toTitleCase(sanitizeLetterNameInput(value))
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
 const OPTIONAL_SUFFIXES = new Set(['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'v'])
@@ -549,7 +553,16 @@ function Admin() {
     if (!firstName) {
       nextInvalidFields.first_name = true
     }
+    if (firstName && !isValidLetterName(firstName)) {
+      nextInvalidFields.first_name = true
+    }
+    if (middleName && !isValidLetterName(middleName, { allowEmpty: true })) {
+      nextInvalidFields.middle_name = true
+    }
     if (!lastName) {
+      nextInvalidFields.last_name = true
+    }
+    if (lastName && !isValidLetterName(lastName)) {
       nextInvalidFields.last_name = true
     }
     if (!username) {
@@ -565,6 +578,12 @@ function Admin() {
 
     if (!firstName || !lastName || !fullName || !email || !username || !password || !role) {
       setAddUserValidationMessage('Please fill out required fields.')
+      setModal('add-user-validation')
+      return
+    }
+
+    if (!isValidLetterName(firstName) || !isValidLetterName(lastName) || !isValidLetterName(middleName, { allowEmpty: true })) {
+      setAddUserValidationMessage('First name, last name, and middle name must contain letters only.')
       setModal('add-user-validation')
       return
     }
@@ -650,6 +669,15 @@ function Admin() {
 
     if (!userForm.first_name.trim() || !userForm.last_name.trim()) {
       setError('First name and last name are required.')
+      return
+    }
+
+    if (
+      !isValidLetterName(userForm.first_name)
+      || !isValidLetterName(userForm.last_name)
+      || !isValidLetterName(userForm.middle_name, { allowEmpty: true })
+    ) {
+      setError('First name, last name, and middle name must contain letters only.')
       return
     }
 
@@ -1285,7 +1313,10 @@ function Admin() {
           </button>
         </div>
 
-        {error ? <p className="error">{error}</p> : null}
+        <ErrorModal message={error || importError} onClose={() => {
+          setError('')
+          setImportError('')
+        }} />
         {loading ? <p>Loading admin data...</p> : null}
 
         {tab === 'users' && !showAddUser ? (
@@ -1436,12 +1467,12 @@ function Admin() {
             >
               <div className="history-top-grid">
                 <label><span className="required-label">First name<span className="required-asterisk">*</span></span><input className={invalidAddUserFields.first_name ? 'input-error' : ''} type="text" value={userForm.first_name} onChange={(e) => {
-                  const nextValue = toTitleCase(e.target.value)
+                  const nextValue = formatLetterNameInput(e.target.value)
                   setUserForm((p) => ({ ...p, first_name: nextValue }))
                   if (nextValue.trim()) setInvalidAddUserFields((p) => ({ ...p, first_name: false }))
                 }} /></label>
                 <label><span className="required-label">Last name<span className="required-asterisk">*</span></span><input className={invalidAddUserFields.last_name ? 'input-error' : ''} type="text" value={userForm.last_name} onChange={(e) => {
-                  const nextValue = toTitleCase(e.target.value)
+                  const nextValue = formatLetterNameInput(e.target.value)
                   setUserForm((p) => ({ ...p, last_name: nextValue }))
                   if (nextValue.trim()) setInvalidAddUserFields((p) => ({ ...p, last_name: false }))
                 }} /></label>
@@ -1888,9 +1919,9 @@ function Admin() {
           </div>
           <div className="pr-modal-body">
             <div className="history-top-grid">
-              <label>Last Name<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.last_name} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, last_name: toTitleCase(e.target.value) }))} /></label>
-              <label>First Name<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.first_name} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, first_name: toTitleCase(e.target.value) }))} /></label>
-              <label>Middle Name<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.middle_name} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, middle_name: toTitleCase(e.target.value) }))} /></label>
+                <label>Last Name<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.last_name} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, last_name: formatLetterNameInput(e.target.value) }))} /></label>
+              <label>First Name<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.first_name} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, first_name: formatLetterNameInput(e.target.value) }))} /></label>
+              <label>Middle Name<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.middle_name} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, middle_name: formatLetterNameInput(e.target.value) }))} /></label>
               <label>Suffix<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.suffix} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, suffix: toTitleCase(e.target.value) }))} /></label>
               <label>Email<input className={isEditingUser ? 'is-locked' : ''} type="email" value={userForm.email} readOnly onChange={(e) => setUserForm((p) => ({ ...p, email: e.target.value }))} /></label>
               <label>Username<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.username} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, username: e.target.value }))} /></label>
@@ -1992,7 +2023,6 @@ function Admin() {
                 <button type="button" className="ghost" onClick={() => importFileInputRef.current?.click()}>Choose CSV File</button>
                 <span>{importFileName || 'No file selected yet.'}</span>
               </div>
-              {importError ? <p className="error">{importError}</p> : null}
               {importSummary ? (
                 <div className="admin-import-summary">
                   <p><strong>File:</strong> {importSummary.fileName || '-'}</p>

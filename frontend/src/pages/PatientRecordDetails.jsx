@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import dentalChart1 from '../assets/Dental Chart 1.png'
 import dentalChart2 from '../assets/Dental Chart 2.png'
+import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
+import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 
 const HEALTH = [
   'Low Blood Pressure',
@@ -87,6 +89,8 @@ const MQ = [
 const PERIODONTAL = ['Gingivitis', 'Moderate Periodontitis', 'Early Periodontitis', 'Advanced Periodontitis']
 const OCCLUSION = ['Class I molar', 'Overbite', 'Overjet', 'Midline Deviation']
 const ACCEPTED_DOCUMENT_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.pdf', '.docx', '.txt', '.csv']
+const MAX_DOCUMENT_FILE_SIZE_BYTES = 25 * 1024 * 1024
+const MAX_DOCUMENT_TOTAL_SIZE_BYTES = 300 * 1024 * 1024
 const ACCEPTED_DOCUMENT_MIME_TYPES = new Set([
   'image/png',
   'image/jpeg',
@@ -334,6 +338,14 @@ const toTitleCase = (value) => {
   if (!raw.trim()) return raw
   return raw.toLowerCase().replace(/\b[a-z]/g, (match) => match.toUpperCase())
 }
+
+const formatFileSizeLabel = (bytes) => {
+  const normalized = Number(bytes)
+  if (!Number.isFinite(normalized) || normalized <= 0) return '0 MB'
+  return `${(normalized / (1024 * 1024)).toFixed(normalized >= 100 * 1024 * 1024 ? 0 : 1)} MB`
+}
+
+const formatLetterNameInput = (value) => toTitleCase(sanitizeLetterNameInput(value))
 
 const calculateAge = (birthDate) => {
   if (!birthDate) return '-'
@@ -591,6 +603,8 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const [serviceFormError, setServiceFormError] = useState('')
   const [serviceForm, setServiceForm] = useSessionStorageState(`${patientRecordUiStoragePrefix}serviceForm`, initialServiceForm())
   const [isServiceSaveConfirmOpen, setIsServiceSaveConfirmOpen] = useSessionStorageState(`${patientRecordUiStoragePrefix}serviceSaveConfirmOpen`, false)
+  const [pendingServiceLineRemovalIndex, setPendingServiceLineRemovalIndex] = useState(null)
+  const [pendingDocumentDeletion, setPendingDocumentDeletion] = useState(null)
   const [pendingDentalSave, setPendingDentalSave] = useSessionStorageState(`${patientRecordUiStoragePrefix}pendingDentalSave`, null)
   const [dentalRecordHistory, setDentalRecordHistory] = useState([])
   const [selectedDentalRecordId, setSelectedDentalRecordId] = useState('')
@@ -621,6 +635,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     if (!dentalRecordHistory.length) return null
     return dentalRecordHistory.find((entry) => entry.id === selectedDentalRecordId) ?? dentalRecordHistory[0]
   }, [dentalRecordHistory, selectedDentalRecordId])
+  const totalDocumentBytes = useMemo(
+    () => patientDocuments.reduce((sum, item) => sum + Math.max(0, Number(item.fileSize || 0)), 0),
+    [patientDocuments],
+  )
   const takeSnapshot = useCallback(() => {
     setPatientSnapshot({
       patient: { ...patient },
@@ -897,6 +915,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
         fileName: row.file_name ?? row.fileName ?? `Document ${index + 1}`,
         fileUrl: row.file_url ?? row.fileUrl ?? '',
         storagePath: row.storage_path ?? row.storagePath ?? '',
+        fileSize: Number(row.file_size ?? row.fileSize ?? 0) || 0,
       })),
     )
   }, [id])
@@ -1171,14 +1190,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
     const parsedIso = parseDateInputDisplay(typedValue)
     if (!parsedIso) {
-      window.alert('Birthdate must follow dd/mm/yyyy format.')
+      setError('Birthdate must follow dd/mm/yyyy format.')
       setBirthdateInput(formatDateInputDisplay(patient.birthdate))
       return
     }
 
     const maxIso = new Date().toISOString().slice(0, 10)
     if (parsedIso > maxIso) {
-      window.alert('Birthdate cannot be in the future.')
+      setError('Birthdate cannot be in the future.')
       setBirthdateInput(formatDateInputDisplay(patient.birthdate))
       return
     }
@@ -1195,7 +1214,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
     const parsedIso = parseDateInputDisplay(typedValue)
     if (!parsedIso) {
-      window.alert('Date of last exam must follow dd/mm/yyyy format.')
+      setError('Date of last exam must follow dd/mm/yyyy format.')
       setLastExamInput(formatDateInputDisplay(dentalHistory.lastExam))
       return
     }
@@ -1269,10 +1288,20 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
   const removeServiceLine = (index) => {
     if (!canManageServiceDetails) return
+    setPendingServiceLineRemovalIndex(index)
+  }
+
+  const cancelServiceLineRemoval = () => {
+    setPendingServiceLineRemovalIndex(null)
+  }
+
+  const confirmServiceLineRemoval = () => {
+    if (!canManageServiceDetails || pendingServiceLineRemovalIndex === null) return
     setServiceForm((previous) => ({
       ...previous,
-      lines: previous.lines.filter((_, lineIndex) => lineIndex !== index),
+      lines: previous.lines.filter((_, lineIndex) => lineIndex !== pendingServiceLineRemovalIndex),
     }))
+    setPendingServiceLineRemovalIndex(null)
   }
 
   const serviceAmounts = useMemo(() => calculateServiceAmounts(serviceForm), [serviceForm])
@@ -1329,6 +1358,21 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const saveDetails = async () => {
     if (!patient.firstName.trim() || !patient.lastName.trim()) {
       setError('First name and last name are required.')
+      return
+    }
+    if (
+      !isValidLetterName(patient.firstName)
+      || !isValidLetterName(patient.lastName)
+      || !isValidLetterName(patient.middleName, { allowEmpty: true })
+    ) {
+      setError('First name, last name, and middle name must contain letters only.')
+      return
+    }
+    if (
+      (patient.occupation.trim() && !isValidLetterName(patient.occupation))
+      || (patient.guardianOccupation.trim() && !isValidLetterName(patient.guardianOccupation))
+    ) {
+      setError('Occupation fields must contain letters only.')
       return
     }
     if (!SEX_OPTIONS.includes(patient.sex)) {
@@ -1844,12 +1888,19 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const deletePatientDocument = async (documentItem) => {
-    const confirmed = window.confirm(`Delete document "${documentItem.fileName}"?`)
-    if (!confirmed) return
+    setPendingDocumentDeletion(documentItem)
+  }
 
+  const cancelPatientDocumentDeletion = () => {
+    setPendingDocumentDeletion(null)
+  }
+
+  const confirmPatientDocumentDeletion = async () => {
+    if (!pendingDocumentDeletion) return
     setError('')
 
     try {
+      const documentItem = pendingDocumentDeletion
       const { data: authData } = await supabase.auth.getUser()
       const actorId = authData?.user?.id ?? null
       const archivedAt = new Date().toISOString()
@@ -1914,6 +1965,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       }
 
       await loadPatientDocuments()
+      setPendingDocumentDeletion(null)
     } catch (deleteError) {
       setError(normalizeError(deleteError, 'Unable to delete document.'))
     }
@@ -1924,6 +1976,16 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     if (!file) return
     if (!isAcceptedDocument(file)) {
       setError('Only PNG, JPEG, PDF, DOCX, TXT, and CSV files are allowed.')
+      event.target.value = ''
+      return
+    }
+    if (file.size > MAX_DOCUMENT_FILE_SIZE_BYTES) {
+      setError(`Each document must be ${formatFileSizeLabel(MAX_DOCUMENT_FILE_SIZE_BYTES)} or smaller.`)
+      event.target.value = ''
+      return
+    }
+    if (totalDocumentBytes + file.size > MAX_DOCUMENT_TOTAL_SIZE_BYTES) {
+      setError(`Document upload exceeds the total allowable limit of ${formatFileSizeLabel(MAX_DOCUMENT_TOTAL_SIZE_BYTES)}.`)
       event.target.value = ''
       return
     }
@@ -1987,7 +2049,12 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
       await loadPatientDocuments()
     } catch (uploadError) {
-      setError(normalizeError(uploadError, 'Unable to upload document.'))
+      const uploadMessage = normalizeError(uploadError, 'Unable to upload document.')
+      if (/maximum allowed size|object exceeded the maximum allowed size/i.test(uploadMessage)) {
+        setError('The storage bucket is still enforcing a lower upload limit. Update the "patient-documents" bucket limit to 25 MB, then try again.')
+      } else {
+        setError(uploadMessage)
+      }
     } finally {
       event.target.value = ''
       setIsUploadingDocument(false)
@@ -2252,7 +2319,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   return (
     <>
       <header className="page-header"><h1>Patient Records</h1></header>
-      {error ? <p className="error">{error}</p> : null}
+      <ErrorModal message={error} onClose={() => setError('')} />
 
       <section className="panel tabs-panel patient-details-page">
         <div className="panel-tabs add-patient-tabs patient-record-tabs">
@@ -2416,7 +2483,15 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
               <article className="pr-card pr-documents-card">
                 <div className="pr-card-head pr-documents-head-wrap">
-                  <h3>Documents</h3>
+                  <div>
+                    <h3>Documents</h3>
+                    <p className="pr-documents-limit-note">
+                      Maximum upload: {formatFileSizeLabel(MAX_DOCUMENT_FILE_SIZE_BYTES)} per file, {formatFileSizeLabel(MAX_DOCUMENT_TOTAL_SIZE_BYTES)} total.
+                    </p>
+                    <p className="pr-documents-limit-note">
+                      Current total uploaded: {formatFileSizeLabel(totalDocumentBytes)} / {formatFileSizeLabel(MAX_DOCUMENT_TOTAL_SIZE_BYTES)}.
+                    </p>
+                  </div>
                   <label className={`mini-doc-btn ${isUploadingDocument ? 'disabled' : ''}`}>
                     {isUploadingDocument ? 'Uploading...' : '+ Add Documents'}
                     <input type="file" accept=".png,.jpg,.jpeg,.pdf,.docx,.txt,.csv" onChange={(event) => { void uploadPatientDocument(event) }} disabled={isUploadingDocument} />
@@ -2431,10 +2506,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   {patientDocuments.map((documentItem, index) => (
                     <div key={documentItem.id} className="pr-documents-row">
                       <span>{index + 1}</span>
-                      <span className="pr-documents-name">{documentItem.fileName}</span>
+                      <span className="pr-documents-name">{documentItem.fileName}{documentItem.fileSize ? ` (${formatFileSizeLabel(documentItem.fileSize)})` : ''}</span>
                       <div className="document-actions">
                         <button type="button" className="view" onClick={() => viewPatientDocument(documentItem)}>View</button>
-                        <button type="button" className="document-delete-btn" onClick={() => { void deletePatientDocument(documentItem) }}>Delete</button>
+                        <button type="button" className="document-delete-btn" onClick={() => { deletePatientDocument(documentItem) }}>Delete</button>
                       </div>
                     </div>
                   ))}
@@ -2495,9 +2570,9 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
           <div className="pr-modal-head"><h2>Update Details</h2><button type="button" onClick={close}>X</button></div>
           <div className="pr-modal-body pr-modal-scroll">
             <div className="history-top-grid">
-              <label>Lastname*<input type="text" value={patient.lastName} onChange={(event) => setPatient((previous) => ({ ...previous, lastName: event.target.value }))} /></label>
-              <label>Firstname*<input type="text" value={patient.firstName} onChange={(event) => setPatient((previous) => ({ ...previous, firstName: event.target.value }))} /></label>
-              <label>Middle Name<input type="text" value={patient.middleName} onChange={(event) => setPatient((previous) => ({ ...previous, middleName: event.target.value }))} /></label>
+              <label>Lastname*<input type="text" value={patient.lastName} onChange={(event) => setPatient((previous) => ({ ...previous, lastName: formatLetterNameInput(event.target.value) }))} /></label>
+              <label>Firstname*<input type="text" value={patient.firstName} onChange={(event) => setPatient((previous) => ({ ...previous, firstName: formatLetterNameInput(event.target.value) }))} /></label>
+              <label>Middle Name<input type="text" value={patient.middleName} onChange={(event) => setPatient((previous) => ({ ...previous, middleName: formatLetterNameInput(event.target.value) }))} /></label>
               <label>Suffix<input type="text" value={patient.suffix} onChange={(event) => setPatient((previous) => ({ ...previous, suffix: event.target.value }))} /></label>
               <label>
                 Sex
@@ -2550,13 +2625,13 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   {CIVIL_STATUS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                 </select>
               </label>
-              <label>Occupation<input type="text" value={patient.occupation} onChange={(event) => setPatient((previous) => ({ ...previous, occupation: event.target.value }))} /></label>
+              <label>Occupation<input type="text" value={patient.occupation} onChange={(event) => setPatient((previous) => ({ ...previous, occupation: formatLetterNameInput(event.target.value) }))} /></label>
               <label className="span-2">Current Address*<input type="text" value={patient.address} onChange={(event) => setPatient((previous) => ({ ...previous, address: event.target.value }))} /></label>
               <label>Mobile Number*<input type="text" value={patient.mobile} onChange={(event) => setPatient((previous) => ({ ...previous, mobile: event.target.value }))} /></label>
               <label className="span-2">Office Address<input type="text" value={patient.officeAddress} onChange={(event) => setPatient((previous) => ({ ...previous, officeAddress: event.target.value }))} /></label>
               <label>Guardian Name<input type="text" value={patient.guardianName} onChange={(event) => setPatient((previous) => ({ ...previous, guardianName: event.target.value }))} /></label>
               <label>Guardian Mobile<input type="text" value={patient.guardianMobileNumber} onChange={(event) => setPatient((previous) => ({ ...previous, guardianMobileNumber: event.target.value }))} /></label>
-              <label>Guardian Occupation<input type="text" value={patient.guardianOccupation} onChange={(event) => setPatient((previous) => ({ ...previous, guardianOccupation: event.target.value }))} /></label>
+              <label>Guardian Occupation<input type="text" value={patient.guardianOccupation} onChange={(event) => setPatient((previous) => ({ ...previous, guardianOccupation: formatLetterNameInput(event.target.value) }))} /></label>
               <label className="span-2">Guardian Office Address<input type="text" value={patient.guardianOfficeAddress} onChange={(event) => setPatient((previous) => ({ ...previous, guardianOfficeAddress: event.target.value }))} /></label>
             </div>
             <div className="modal-actions"><button type="button" className="danger-btn" onClick={close}>Cancel</button><button type="button" className="success-btn" onClick={() => { void saveDetails() }} disabled={isSaving}>Save</button></div>
@@ -2666,14 +2741,12 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   type="date"
                   className="easy-date-input"
                   value={serviceForm.date}
-                  onClick={openDatePicker}
-                  onFocus={openDatePicker}
-                  onChange={(event) => { updateServiceForm({ date: event.target.value }) }}
-                  disabled={isReceptionist || Boolean(pendingDentalSave)}
+                  readOnly
+                  disabled
                 />
               </label>
             </div>
-            {serviceFormError ? <div className="service-ledger-alert" role="alert">{serviceFormError}</div> : null}
+            <ErrorModal message={serviceFormError} onClose={() => setServiceFormError('')} />
             <div className="service-ledger-table">
               <div className="service-ledger-head"><span>Services</span><span>Quantity</span><span>Amount (PHP)</span><span>Remove</span></div>
               <div className="service-ledger-rows">
@@ -2700,8 +2773,8 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                         <button type="button" className="service-ledger-qty-btn" onClick={() => updateServiceLine(index, { quantity: Number(line.quantity || 1) + 1 })} disabled={isReceptionist || !line.serviceId}>+</button>
                       </div>
                       <label className="service-ledger-amount">
-                        <span>&#8369;</span>
-                        <input type="number" inputMode="decimal" value={line.unitPrice} min="0" step="0.01" onChange={(event) => updateServiceLine(index, { unitPrice: event.target.value })} disabled={isReceptionist} />
+                        <span>Php</span>
+                        <input type="number" inputMode="decimal" value={line.unitPrice} min="0" step="0.01" readOnly disabled />
                       </label>
                       <div className="service-ledger-remove-cell">
                         <button type="button" className="service-ledger-remove-line" onClick={() => removeServiceLine(index)} title="Remove service" disabled={isReceptionist}>
@@ -2718,12 +2791,12 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   <strong>Discount</strong>
                   <select value={serviceForm.discountType} onChange={(event) => updateServiceForm({ discountType: event.target.value })} className="service-ledger-discount-mode">
                     <option value="percent">% Percent</option>
-                    <option value="peso">Peso</option>
+                    <option value="peso">Php</option>
                   </select>
                 </div>
                 <div className="service-ledger-discount-right">
                   <label className="service-ledger-discount-input">
-                    <span>{serviceForm.discountType === 'percent' ? '%' : '\u20B1'}</span>
+                    <span>{serviceForm.discountType === 'percent' ? '%' : 'Php'}</span>
                     <input
                       type="number"
                       inputMode="decimal"
@@ -2754,6 +2827,38 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               <div className="modal-actions">
                 <button type="button" className="danger-btn" onClick={cancelServiceSaveConfirm}>Cancel</button>
                 <button type="button" className="success-btn" onClick={() => { void confirmServiceSave() }}>Yes</button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {pendingServiceLineRemovalIndex !== null ? (
+        <>
+          <div className="service-confirm-backdrop" onClick={cancelServiceLineRemoval} />
+          <div className="pr-modal service-confirm-modal">
+            <div className="pr-modal-head"><h2>Confirm Remove</h2></div>
+            <div className="pr-modal-body">
+              <p>Are you sure you want to remove this service?</p>
+              <div className="modal-actions">
+                <button type="button" className="danger-btn" onClick={cancelServiceLineRemoval}>Cancel</button>
+                <button type="button" className="success-btn" onClick={confirmServiceLineRemoval}>Yes</button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {pendingDocumentDeletion ? (
+        <>
+          <div className="service-confirm-backdrop" onClick={cancelPatientDocumentDeletion} />
+          <div className="pr-modal service-confirm-modal">
+            <div className="pr-modal-head"><h2>Delete Document</h2></div>
+            <div className="pr-modal-body">
+              <p>Are you sure you want to remove "{pendingDocumentDeletion.fileName}"?</p>
+              <div className="modal-actions">
+                <button type="button" className="danger-btn" onClick={cancelPatientDocumentDeletion}>Cancel</button>
+                <button type="button" className="success-btn" onClick={() => { void confirmPatientDocumentDeletion() }}>Yes</button>
               </div>
             </div>
           </div>

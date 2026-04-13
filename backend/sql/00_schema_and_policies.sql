@@ -1140,10 +1140,11 @@ from (
 ) as v(role, item_key)
 on conflict do nothing;
 
-insert into storage.buckets (id, name, public)
-values ('patient-documents', 'patient-documents', true)
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('patient-documents', 'patient-documents', true, 26214400)
 on conflict (id) do update
-set public = excluded.public;
+set public = excluded.public,
+    file_size_limit = excluded.file_size_limit;
 
 drop policy if exists patient_documents_objects_select_staff on storage.objects;
 create policy patient_documents_objects_select_staff

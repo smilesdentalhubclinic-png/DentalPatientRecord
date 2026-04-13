@@ -6421,11 +6421,26 @@ body {
 
 .pr-documents-card {
   margin-top: 10px;
+  margin-bottom: 30px;
+}
+
+.pr-authorization {
+  margin-top: 8px;
 }
 
 .pr-documents-head-wrap {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
   border-bottom: 1px solid #d7e2e9;
   padding-bottom: 8px;
+}
+
+.pr-documents-limit-note {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: #516a79;
 }
 
 .mini-doc-btn {
@@ -6648,6 +6663,15 @@ body {
 
 .pr-modal.procedures-error-modal {
   width: min(620px, calc(100vw - 28px));
+  z-index: 91;
+}
+
+.error-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 24, 34, 0.52);
+  backdrop-filter: blur(2px);
+  z-index: 90;
 }
 
 .procedures-error-modal .pr-modal-head {

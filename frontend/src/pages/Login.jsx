@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import ErrorModal from '../components/ErrorModal'
 import loginBackground from '../assets/login.png'
 
 function Login({
@@ -39,6 +40,7 @@ function Login({
 
   return (
     <>
+      <ErrorModal message={error || forgotError} onClose={closeForgotModal} />
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
 
@@ -478,7 +480,6 @@ function Login({
                     </button>
                   </div>
                 </label>
-                {error ? <p className="error">{error}</p> : null}
                 <button type="button" className="forgot-password-btn" onClick={() => setIsForgotOpen(true)}>
                   Forgot password?
                 </button>
@@ -540,7 +541,6 @@ function Login({
                     />
                   </>
                 ) : null}
-                {forgotError ? <p className="forgot-error">{forgotError}</p> : null}
                 {forgotSuccess ? <p className="forgot-success">{forgotSuccess}</p> : null}
                 <div className="forgot-actions">
                   <button type="button" onClick={closeForgotModal}>Close</button>
@@ -565,7 +565,6 @@ function Login({
               </form>
             ) : (
               <>
-                {forgotError ? <p className="forgot-error">{forgotError}</p> : null}
                 {forgotSuccess ? <p className="forgot-success">{forgotSuccess}</p> : null}
                 <div className="forgot-actions">
                   <button type="button" onClick={closeForgotModal}>Close</button>
