@@ -5,6 +5,9 @@ import loginBackground from '../assets/login.png'
 function Login({
   form,
   error,
+  onErrorClose,
+  logoutNotice,
+  onLogoutNoticeClose,
   isLoggingIn,
   showPassword,
   onChange,
@@ -38,9 +41,24 @@ function Login({
     onForgotClose?.()
   }
 
+  const handleErrorModalClose = () => {
+    if (error) {
+      onErrorClose?.()
+      return
+    }
+
+    if (forgotError) {
+      onForgotClose?.()
+      return
+    }
+
+    closeForgotModal()
+  }
+
   return (
     <>
-      <ErrorModal message={error || forgotError} onClose={closeForgotModal} />
+      <ErrorModal message={logoutNotice} onClose={onLogoutNoticeClose} />
+      <ErrorModal message={error || forgotError} onClose={handleErrorModalClose} />
       <style jsx global>{`
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap');
 

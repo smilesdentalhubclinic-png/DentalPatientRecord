@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ErrorModal from '../components/ErrorModal'
 import FilterDateInput from '../components/FilterDateInput'
 import SortDirectionIcon from '../components/SortDirectionIcon'
@@ -212,7 +213,9 @@ const formatStaffDisplayName = (profile) => {
 }
 
 function Admin() {
-  const importFileInputRef = useRef(null)
+  const navigate = useNavigate()
+  const patientImportFileInputRef = useRef(null)
+  const recordsImportFileInputRef = useRef(null)
   const [tab, setTab] = useState('users')
   const [showAddUser, setShowAddUser] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showAddUser`, false)
   const [users, setUsers] = useState([])
@@ -255,11 +258,15 @@ function Admin() {
   const [isEditingUser, setIsEditingUser] = useState(false)
   const [invalidAddUserFields, setInvalidAddUserFields] = useState({})
   const [addUserValidationMessage, setAddUserValidationMessage] = useState('')
-  const [importFileName, setImportFileName] = useState('')
-  const [importCsvContent, setImportCsvContent] = useState('')
-  const [importSummary, setImportSummary] = useState(null)
+  const [patientImportFileName, setPatientImportFileName] = useState('')
+  const [patientImportCsvContent, setPatientImportCsvContent] = useState('')
+  const [patientImportSummary, setPatientImportSummary] = useState(null)
+  const [recordsImportFileName, setRecordsImportFileName] = useState('')
+  const [recordsImportCsvContent, setRecordsImportCsvContent] = useState('')
+  const [recordsImportSummary, setRecordsImportSummary] = useState(null)
   const [importError, setImportError] = useState('')
-  const [isImporting, setIsImporting] = useState(false)
+  const [isImportingPatients, setIsImportingPatients] = useState(false)
+  const [isImportingRecords, setIsImportingRecords] = useState(false)
   const [showUsersFilters, setShowUsersFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showUsersFilters`, false)
   const [showInactiveFilters, setShowInactiveFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showInactiveFilters`, false)
   const [showArchiveFilters, setShowArchiveFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showArchiveFilters`, false)
@@ -298,22 +305,16 @@ function Admin() {
     setSelected(null)
     setIsEditingUser(false)
     setImportError('')
-    setImportSummary(null)
-    setIsImporting(false)
-    if (importFileInputRef.current) {
-      importFileInputRef.current.value = ''
+    setPatientImportSummary(null)
+    setRecordsImportSummary(null)
+    setIsImportingPatients(false)
+    setIsImportingRecords(false)
+    if (patientImportFileInputRef.current) {
+      patientImportFileInputRef.current.value = ''
     }
-  }
-
-  const openImportModal = () => {
-    setImportError('')
-    setImportSummary(null)
-    setImportCsvContent('')
-    setImportFileName('')
-    if (importFileInputRef.current) {
-      importFileInputRef.current.value = ''
+    if (recordsImportFileInputRef.current) {
+      recordsImportFileInputRef.current.value = ''
     }
-    setModal('import-patients')
   }
 
   const showSuccess = (message) => {
@@ -321,36 +322,52 @@ function Admin() {
     setModal('success')
   }
 
-  const handleImportFileChange = async (event) => {
+  const handleImportFileChange = async (event, type) => {
     const file = event.target.files?.[0]
     if (!file) {
-      setImportCsvContent('')
-      setImportFileName('')
+      if (type === 'patients') {
+        setPatientImportCsvContent('')
+        setPatientImportFileName('')
+      } else {
+        setRecordsImportCsvContent('')
+        setRecordsImportFileName('')
+      }
       return
     }
 
     try {
       const text = await file.text()
-      setImportCsvContent(text)
-      setImportFileName(file.name)
+      if (type === 'patients') {
+        setPatientImportCsvContent(text)
+        setPatientImportFileName(file.name)
+        setPatientImportSummary(null)
+      } else {
+        setRecordsImportCsvContent(text)
+        setRecordsImportFileName(file.name)
+        setRecordsImportSummary(null)
+      }
       setImportError('')
-      setImportSummary(null)
     } catch {
       setImportError('Unable to read the selected CSV file.')
-      setImportCsvContent('')
-      setImportFileName('')
+      if (type === 'patients') {
+        setPatientImportCsvContent('')
+        setPatientImportFileName('')
+      } else {
+        setRecordsImportCsvContent('')
+        setRecordsImportFileName('')
+      }
     }
   }
 
   const importPatientMigration = async () => {
-    if (!importCsvContent.trim()) {
-      setImportError('Please choose a CSV file first.')
+    if (!patientImportCsvContent.trim()) {
+      setImportError('Please choose the patient information CSV first.')
       return
     }
 
-    setIsImporting(true)
+    setIsImportingPatients(true)
     setImportError('')
-    setImportSummary(null)
+    setPatientImportSummary(null)
 
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
@@ -367,8 +384,8 @@ function Admin() {
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          fileName: importFileName,
-          csvContent: importCsvContent,
+          fileName: patientImportFileName,
+          csvContent: patientImportCsvContent,
         }),
       })
 
@@ -378,12 +395,57 @@ function Admin() {
         return
       }
 
-      setImportSummary(payload?.summary || null)
+      setPatientImportSummary(payload?.summary || null)
       await loadAll()
     } catch {
       setImportError('Unable to import the migration CSV.')
     } finally {
-      setIsImporting(false)
+      setIsImportingPatients(false)
+    }
+  }
+
+  const importPatientRecords = async () => {
+    if (!recordsImportCsvContent.trim()) {
+      setImportError('Please choose the dental and service records CSV first.')
+      return
+    }
+
+    setIsImportingRecords(true)
+    setImportError('')
+    setRecordsImportSummary(null)
+
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+      const accessToken = sessionData?.session?.access_token || ''
+      if (sessionError || !accessToken) {
+        setImportError('Unable to verify your session. Please log in again.')
+        return
+      }
+
+      const response = await fetch('/api/admin/import-patient-records', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          fileName: recordsImportFileName,
+          csvContent: recordsImportCsvContent,
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setImportError(payload?.error || 'Unable to import the dental and service records CSV.')
+        return
+      }
+
+      setRecordsImportSummary(payload?.summary || null)
+      await loadAll()
+    } catch {
+      setImportError('Unable to import the dental and service records CSV.')
+    } finally {
+      setIsImportingRecords(false)
     }
   }
 
@@ -1175,6 +1237,32 @@ function Admin() {
     setArchivePageInput('1')
   }
 
+  const usersCurrentSortDirection = (
+    usersSortBy === 'created'
+      ? usersCreatedSortDirection
+      : usersSortBy === 'staffId'
+        ? usersStaffIdSortDirection
+        : usersSortBy === 'role'
+          ? usersRoleSortDirection
+          : usersNameSortDirection
+  )
+
+  const inactiveCurrentSortDirection = (
+    inactiveSortBy === 'inactiveDate'
+      ? inactiveDateSortDirection
+      : inactiveSortBy === 'patientId'
+        ? inactivePatientIdSortDirection
+        : inactiveNameSortDirection
+  )
+
+  const archiveCurrentSortDirection = (
+    archiveSortBy === 'archiveDate'
+      ? archiveDateSortDirection
+      : (archiveSortBy === 'patientId' || archiveSortBy === 'staffId')
+        ? archiveIdSortDirection
+        : archiveNameSortDirection
+  )
+
   const handlePageJump = ({ pageInput, setPageInput, setPage, totalPages, fallbackPage }) => {
     const parsedPage = Number.parseInt(pageInput, 10)
     if (!Number.isFinite(parsedPage)) {
@@ -1296,7 +1384,7 @@ function Admin() {
       <header className="page-header">
         <h1>Admin</h1>
         <div className="page-header-actions">
-          <button type="button" className="primary" onClick={openImportModal}>Import Patients CSV</button>
+          <button type="button" className="primary" onClick={() => navigate('/admin/import')}>Import Patient Records</button>
         </div>
       </header>
 
@@ -1361,7 +1449,8 @@ function Admin() {
                   <button
                     type="button"
                     className="ghost sort-direction-btn"
-                    aria-label="Toggle sort direction"
+                    aria-label={`Current sort direction: ${usersCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    title={`Current sort direction: ${usersCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
                     onClick={() => {
                       if (usersSortBy === 'created') {
                         setUsersCreatedSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
@@ -1539,7 +1628,8 @@ function Admin() {
                   <button
                     type="button"
                     className="ghost sort-direction-btn"
-                    aria-label="Toggle sort direction"
+                    aria-label={`Current sort direction: ${inactiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    title={`Current sort direction: ${inactiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
                     onClick={() => {
                       if (inactiveSortBy === 'inactiveDate') {
                         setInactiveDateSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
@@ -1583,7 +1673,7 @@ function Admin() {
                     <span>{row.sex === 'Male' ? 'M' : row.sex === 'Female' ? 'F' : row.sex}</span>
                     <span>{calculateAge(row.birth_date)}</span>
                     <span>{formatDate(row.archived_at ?? row.created_at)}</span>
-                    <span><button type="button" className="icon-btn danger" onClick={() => openConfirmArchive({ ...row, kind: 'patient' })}>&#8681;</button></span>
+                    <span><button type="button" className="icon-btn danger" title="Archive" onClick={() => openConfirmArchive({ ...row, kind: 'patient' })}>&#8681;</button></span>
                   </div>
                 ))}
                 {!loading && filteredInactivePatients.length === 0 ? <p>No inactive patients found.</p> : null}
@@ -1644,7 +1734,8 @@ function Admin() {
                   <button
                     type="button"
                     className="ghost sort-direction-btn"
-                    aria-label="Toggle sort direction"
+                    aria-label={`Current sort direction: ${archiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    title={`Current sort direction: ${archiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
                     onClick={() => {
                       if (archiveSortBy === 'archiveDate') {
                         setArchiveDateSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
@@ -1910,7 +2001,7 @@ function Admin() {
             <h2>View or Update User</h2>
             <div className="admin-user-modal-head-actions">
               {!isEditingUser ? (
-                <button type="button" className="icon-btn" onClick={startUserEdit} aria-label="Edit user">
+                <button type="button" className="icon-btn" title="Update" onClick={startUserEdit} aria-label="Edit user">
                   &#9998;
                 </button>
               ) : null}
@@ -2004,54 +2095,6 @@ function Admin() {
         </div>
       ) : null}
 
-      {modal === 'import-patients' ? (
-        <div className="pr-modal procedures-modal admin-import-modal">
-          <div className="pr-modal-head">
-            <h2>Import Patient Migration CSV</h2>
-            <button type="button" onClick={closeModal}>X</button>
-          </div>
-          <div className="pr-modal-body">
-            <div className="admin-import-modal-body">
-              <p>Upload the migration CSV and the system will create or update patients and their dental records.</p>
-              <div className="admin-import-actions">
-                <input
-                  ref={importFileInputRef}
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(event) => { void handleImportFileChange(event) }}
-                />
-                <button type="button" className="ghost" onClick={() => importFileInputRef.current?.click()}>Choose CSV File</button>
-                <span>{importFileName || 'No file selected yet.'}</span>
-              </div>
-              {importSummary ? (
-                <div className="admin-import-summary">
-                  <p><strong>File:</strong> {importSummary.fileName || '-'}</p>
-                  <p><strong>Total rows:</strong> {importSummary.totalRows ?? 0}</p>
-                  <p><strong>Patients created:</strong> {importSummary.patientsCreated ?? 0}</p>
-                  <p><strong>Patients updated:</strong> {importSummary.patientsUpdated ?? 0}</p>
-                  <p><strong>Dental records created:</strong> {importSummary.dentalRecordsCreated ?? 0}</p>
-                  <p><strong>Dental records updated:</strong> {importSummary.dentalRecordsUpdated ?? 0}</p>
-                  <p><strong>Skipped rows:</strong> {importSummary.skippedRows ?? 0}</p>
-                  {Array.isArray(importSummary.errors) && importSummary.errors.length > 0 ? (
-                    <div className="admin-import-errors">
-                      <p><strong>Row issues:</strong></p>
-                      <ul>
-                        {importSummary.errors.slice(0, 8).map((item) => <li key={item}>{item}</li>)}
-                      </ul>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <div className="modal-actions admin-import-modal-actions">
-              <button type="button" className="danger-btn" onClick={closeModal}>Close</button>
-              <button type="button" className="success-btn" onClick={() => { void importPatientMigration() }} disabled={isImporting}>
-                {isImporting ? 'Importing...' : 'Process CSV Import'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </>
   )
 }

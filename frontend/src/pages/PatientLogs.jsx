@@ -171,7 +171,8 @@ function PatientLogs() {
               <button
                 type="button"
                 className="ghost sort-direction-btn"
-                aria-label="Toggle sort direction"
+                aria-label={`Current sort direction: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                title={`Current sort direction: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
                 onClick={() => {
                   setSortOrder((previous) => (previous === 'asc' ? 'desc' : 'asc'))
                   setCurrentPage(1)

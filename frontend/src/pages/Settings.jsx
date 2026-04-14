@@ -591,7 +591,7 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
                         </button>
                       </>
                     ) : (
-                      <button type="button" className="icon-btn" onClick={startProfileEdit} aria-label="Edit profile">
+                      <button type="button" className="icon-btn" title="Update" onClick={startProfileEdit} aria-label="Edit profile">
                         &#9998;
                       </button>
                     )}

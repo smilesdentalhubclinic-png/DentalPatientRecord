@@ -452,8 +452,8 @@ function Procedures({ currentProfile }) {
                     <span>{tab === 'services' ? item.service_name : sanitizeLegendCodeInput(item.code)}</span>
                     <span>{tab === 'services' ? formatPrice(item.price) : item.condition_name}</span>
                     <span className="row-actions">
-                      <button type="button" className="icon-btn" onClick={() => openEdit(item)}>&#9998;</button>
-                      {isAdmin ? <button type="button" className="icon-btn danger" onClick={() => openArchive(item)}>&#8681;</button> : null}
+                      <button type="button" className="icon-btn" title="Update" onClick={() => openEdit(item)}>&#9998;</button>
+                      {isAdmin ? <button type="button" className="icon-btn danger" title="Archive" onClick={() => openArchive(item)}>&#8681;</button> : null}
                     </span>
                   </div>
                 ))}

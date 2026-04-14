@@ -258,6 +258,13 @@ function PatientRecords() {
   const activeCount = useMemo(() => filteredRecords.filter((row) => row.is_active).length, [filteredRecords])
   const visibleStart = filteredRecords.length === 0 ? 0 : pageStart + 1
   const visibleEnd = filteredRecords.length === 0 ? 0 : Math.min(pageStart + rowsPerPage, filteredRecords.length)
+  const currentSortDirection = (
+    sortBy === 'registered'
+      ? registeredSortDirection
+      : sortBy === 'patientId'
+        ? patientIdSortDirection
+        : nameSortDirection
+  )
   const getVisiblePageItems = () => {
     if (totalPages <= 3) return Array.from({ length: totalPages }, (_, index) => index + 1)
 
@@ -332,7 +339,8 @@ function PatientRecords() {
               <button
                 type="button"
                 className="ghost sort-direction-btn"
-                aria-label="Toggle sort direction"
+                aria-label={`Current sort direction: ${currentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                title={`Current sort direction: ${currentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
                 onClick={() => {
                   if (sortBy === 'registered') {
                     setRegisteredSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
@@ -346,13 +354,7 @@ function PatientRecords() {
                 }}
               >
                 <SortDirectionIcon
-                  direction={
-                    (sortBy === 'registered'
-                      ? registeredSortDirection
-                      : sortBy === 'patientId'
-                        ? patientIdSortDirection
-                        : nameSortDirection)
-                  }
+                  direction={currentSortDirection}
                 />
               </button>
             </div>
@@ -385,6 +387,7 @@ function PatientRecords() {
                     type="button"
                     className={`status ${row.is_active ? 'on' : 'off'}`}
                     aria-label={`Set ${row.last_name}, ${row.first_name} as ${row.is_active ? 'inactive' : 'active'}`}
+                    title={row.is_active ? 'Active' : 'Inactive'}
                     onClick={() => {
                       setError('')
                       setStatusConfirmRow(row)

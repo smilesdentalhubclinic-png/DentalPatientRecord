@@ -59,6 +59,8 @@ const OCCLUSION_FIELDS = [
   ['dental_record_occlusion_midline_deviation', 'Midline Deviation'],
 ];
 
+const MAX_SERVICE_IMPORT_COLUMNS = 10;
+
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -183,6 +185,21 @@ function parseTimestampValue(value) {
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
+}
+
+function parseIntegerValue(value, fallback = 1) {
+  const raw = normalizeString(value);
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isInteger(parsed) ? parsed : fallback;
+}
+
+function parseNumericValue(value, fallback = null) {
+  const raw = normalizeString(value);
+  if (!raw) return fallback;
+  const normalized = raw.replace(/,/g, '');
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function createBooleanMap(items, value = false) {
@@ -481,6 +498,32 @@ function hasDentalRecordData(row) {
   ].some((field) => normalizeString(row[field]));
 }
 
+function hasServiceRecordData(row) {
+  return [
+    'service_record_service_name',
+    'service_record_service_id',
+    'service_record_visit_at',
+    'service_record_quantity',
+    'service_record_unit_price',
+    'service_record_discount_amount',
+    'service_record_amount',
+    'service_record_notes',
+    ...Array.from({ length: MAX_SERVICE_IMPORT_COLUMNS }, (_, index) => {
+      const serviceIndex = index + 1;
+      return [
+        `service_${serviceIndex}_name`,
+        `service_${serviceIndex}_id`,
+        `service_${serviceIndex}_visit_at`,
+        `service_${serviceIndex}_quantity`,
+        `service_${serviceIndex}_unit_price`,
+        `service_${serviceIndex}_discount_amount`,
+        `service_${serviceIndex}_amount`,
+        `service_${serviceIndex}_notes`,
+      ];
+    }).flat(),
+  ].some((field) => normalizeString(row[field]));
+}
+
 function buildChartBooleanGroup(row, fieldMap) {
   return Object.fromEntries(fieldMap.map(([fieldName, label]) => [label, normalizeBoolean(row[fieldName]) ?? false]));
 }
@@ -521,6 +564,78 @@ function parseToothChartEntries(rawValue, rowPrefix) {
     }, {});
 }
 
+function collectToothChartValidationIssues(rawValue, fieldName, validLegendCodes) {
+  const raw = normalizeString(rawValue);
+  if (!raw) return [];
+
+  return raw
+    .split(/[;\n|]/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .flatMap((entry) => {
+      const [rawToothNumber, rawCode] = entry.split(':').map((item) => item?.trim?.() || '');
+      const toothNumber = Number.parseInt(rawToothNumber, 10);
+      const code = normalizeString(rawCode).toUpperCase();
+
+      if (!Number.isInteger(toothNumber) || toothNumber < 1 || toothNumber > 32 || !code) {
+        return [`${fieldName} has an invalid tooth chart entry "${entry}". Use toothNumber:LegendCode.`];
+      }
+
+      if (!validLegendCodes.has(code)) {
+        return [`${fieldName} uses unknown legend code "${code}" on tooth ${toothNumber}.`];
+      }
+
+      return [];
+    });
+}
+
+function collectToothMapJsonValidationIssues(rawValue, validLegendCodes) {
+  const raw = normalizeString(rawValue);
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return ['dental_record_tooth_map_json must be a JSON object.'];
+    }
+
+    return Object.entries(parsed).flatMap(([toothKey, rawCode]) => {
+      const code = normalizeString(rawCode).toUpperCase();
+      if (!code) {
+        return [`dental_record_tooth_map_json has an empty legend code for "${toothKey}".`];
+      }
+
+      if (!validLegendCodes.has(code)) {
+        return [`dental_record_tooth_map_json uses unknown legend code "${code}" on "${toothKey}".`];
+      }
+
+      return [];
+    });
+  } catch {
+    return ['dental_record_tooth_map_json is not valid JSON.'];
+  }
+}
+
+function validateDentalRecordLegendCodes(row, validLegendCodes) {
+  const hasExplicitCharts = Boolean(
+    normalizeString(row.dental_record_top_tooth_chart) || normalizeString(row.dental_record_bottom_tooth_chart),
+  );
+
+  if (hasExplicitCharts) {
+    return [
+      ...collectToothChartValidationIssues(row.dental_record_top_tooth_chart, 'dental_record_top_tooth_chart', validLegendCodes),
+      ...collectToothChartValidationIssues(row.dental_record_bottom_tooth_chart, 'dental_record_bottom_tooth_chart', validLegendCodes),
+    ];
+  }
+
+  return collectToothMapJsonValidationIssues(row.dental_record_tooth_map_json, validLegendCodes);
+}
+
+function roundCurrency(value) {
+  if (!Number.isFinite(value)) return null;
+  return Math.round(value * 100) / 100;
+}
+
 function buildToothMap(row) {
   const topChart = parseToothChartEntries(row.dental_record_top_tooth_chart, 'top');
   const bottomChart = parseToothChartEntries(row.dental_record_bottom_tooth_chart, 'bottom');
@@ -554,6 +669,234 @@ function buildDentalRecordPayload(row, patientId, requesterUserId) {
     created_by: requesterUserId,
     updated_by: requesterUserId,
   };
+}
+
+function buildServiceRecordPayload(row, patientId, serviceId, requesterUserId) {
+  const quantity = Math.max(1, parseIntegerValue(row.service_record_quantity, 1));
+  const unitPrice = parseNumericValue(row.service_record_unit_price, null);
+  const discountAmount = Math.max(0, parseNumericValue(row.service_record_discount_amount, 0) ?? 0);
+  const providedAmount = parseNumericValue(row.service_record_amount, null);
+  const computedAmount = unitPrice == null
+    ? providedAmount
+    : Math.max((unitPrice * quantity) - discountAmount, 0);
+
+  return {
+    patient_id: patientId,
+    service_id: serviceId,
+    quantity,
+    unit_price: unitPrice,
+    discount_amount: discountAmount,
+    performed_by: requesterUserId,
+    notes: normalizeString(row.service_record_notes) || null,
+    amount: providedAmount ?? computedAmount,
+    visit_at: parseTimestampValue(row.service_record_visit_at) || new Date().toISOString(),
+    created_by: requesterUserId,
+    updated_by: requesterUserId,
+  };
+}
+
+function buildIndexedServiceRecordPayload(serviceEntry, patientId, serviceId, requesterUserId) {
+  const quantity = Math.max(1, parseIntegerValue(serviceEntry.quantity, 1));
+  const unitPrice = parseNumericValue(serviceEntry.unitPrice, null);
+  const discountAmount = Math.max(0, parseNumericValue(serviceEntry.discountAmount, 0) ?? 0);
+  const providedAmount = parseNumericValue(serviceEntry.amount, null);
+  const computedAmount = unitPrice == null
+    ? providedAmount
+    : Math.max((unitPrice * quantity) - discountAmount, 0);
+
+  return {
+    patient_id: patientId,
+    service_id: serviceId,
+    quantity,
+    unit_price: unitPrice,
+    discount_amount: discountAmount,
+    performed_by: requesterUserId,
+    notes: normalizeString(serviceEntry.notes) || null,
+    amount: providedAmount ?? computedAmount,
+    visit_at: parseTimestampValue(serviceEntry.visitAt) || new Date().toISOString(),
+    created_by: requesterUserId,
+    updated_by: requesterUserId,
+  };
+}
+
+function extractPatientImportIdentifier(row) {
+  return normalizeString(row.patient_id || row.patient_code || row.patient_identifier);
+}
+
+function extractPatientLastName(row) {
+  return toTitleCase(row.patient_last_name || row.last_name || row.dental_record_last_name);
+}
+
+function extractPatientFirstName(row) {
+  return toTitleCase(row.patient_first_name || row.first_name || row.dental_record_first_name);
+}
+
+function extractServiceLookupValue(row) {
+  return normalizeString(row.service_record_service_name || row.service_name || row.service_record_service_id);
+}
+
+async function loadImportValidationLookups(serviceClient) {
+  const [{ data: legendRows, error: legendError }, { data: serviceRows, error: serviceError }] = await Promise.all([
+    serviceClient
+      .from('tooth_conditions')
+      .select('code, is_active'),
+    serviceClient
+      .from('services')
+      .select('id, service_name, price, is_active'),
+  ]);
+
+  if (legendError) throw legendError;
+  if (serviceError) throw serviceError;
+
+  const activeLegendCodes = new Set(
+    (legendRows ?? [])
+      .filter((row) => row?.is_active !== false)
+      .map((row) => normalizeString(row.code).toUpperCase())
+      .filter(Boolean),
+  );
+
+  const serviceById = new Map();
+  const serviceByName = new Map();
+
+  (serviceRows ?? [])
+    .filter((row) => row?.is_active !== false)
+    .forEach((row) => {
+      const normalizedName = normalizeString(row.service_name).toLowerCase();
+      if (row?.id) serviceById.set(row.id, row);
+      if (normalizedName) serviceByName.set(normalizedName, row);
+    });
+
+  return {
+    activeLegendCodes,
+    serviceById,
+    serviceByName,
+  };
+}
+
+function extractServiceEntries(row) {
+  const indexedEntries = Array.from({ length: MAX_SERVICE_IMPORT_COLUMNS }, (_, index) => {
+    const serviceIndex = index + 1;
+    const name = normalizeString(row[`service_${serviceIndex}_name`]);
+    const id = normalizeString(row[`service_${serviceIndex}_id`]);
+    const visitAt = normalizeString(row[`service_${serviceIndex}_visit_at`]);
+    const quantity = normalizeString(row[`service_${serviceIndex}_quantity`]);
+    const unitPrice = normalizeString(row[`service_${serviceIndex}_unit_price`]);
+    const discountAmount = normalizeString(row[`service_${serviceIndex}_discount_amount`]);
+    const amount = normalizeString(row[`service_${serviceIndex}_amount`]);
+    const notes = normalizeString(row[`service_${serviceIndex}_notes`]);
+
+    if (![name, id, visitAt, quantity, unitPrice, discountAmount, amount, notes].some(Boolean)) {
+      return null;
+    }
+
+    return {
+      slot: serviceIndex,
+      lookupValue: normalizeString(name || id),
+      visitAt,
+      quantity,
+      unitPrice,
+      discountAmount,
+      amount,
+      notes,
+    };
+  }).filter(Boolean);
+
+  if (indexedEntries.length > 0) {
+    return indexedEntries;
+  }
+
+  const fallbackLookupValue = extractServiceLookupValue(row);
+  if (!fallbackLookupValue
+    && ![
+      row.service_record_visit_at,
+      row.service_record_quantity,
+      row.service_record_unit_price,
+      row.service_record_discount_amount,
+      row.service_record_amount,
+      row.service_record_notes,
+    ].some((value) => normalizeString(value))) {
+    return [];
+  }
+
+  return [{
+    slot: 1,
+    lookupValue: fallbackLookupValue,
+    visitAt: row.service_record_visit_at,
+    quantity: row.service_record_quantity,
+    unitPrice: row.service_record_unit_price,
+    discountAmount: row.service_record_discount_amount,
+    amount: row.service_record_amount,
+    notes: row.service_record_notes,
+  }];
+}
+
+async function resolvePatientForRecordImport(serviceClient, patientCache, patientIdentifier) {
+  const cacheKey = patientIdentifier.toLowerCase();
+  if (patientCache.has(cacheKey)) {
+    return patientCache.get(cacheKey);
+  }
+
+  let query = serviceClient
+    .from('patients')
+    .select('id, patient_code, first_name, last_name')
+    .limit(1);
+
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(patientIdentifier)) {
+    query = query.eq('id', patientIdentifier);
+  } else {
+    query = query.eq('patient_code', patientIdentifier.toUpperCase());
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const patient = data?.[0] || null;
+  if (!patient) {
+    throw new Error(`Patient ID "${patientIdentifier}" was not found.`);
+  }
+
+  patientCache.set(cacheKey, patient);
+  return patient;
+}
+
+async function resolveServiceForImport(serviceClient, serviceCache, serviceLookupValue, validationLookups = null) {
+  const cacheKey = serviceLookupValue.toLowerCase();
+  if (serviceCache.has(cacheKey)) {
+    return serviceCache.get(cacheKey);
+  }
+
+  if (validationLookups) {
+    const catalogMatch = validationLookups.serviceById.get(serviceLookupValue)
+      || validationLookups.serviceByName.get(serviceLookupValue.toLowerCase());
+    if (!catalogMatch) {
+      throw new Error(`Service "${serviceLookupValue}" was not found.`);
+    }
+
+    serviceCache.set(cacheKey, catalogMatch);
+    return catalogMatch;
+  }
+
+  let query = serviceClient
+    .from('services')
+    .select('id, service_name, price, is_active')
+    .limit(1);
+
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(serviceLookupValue)) {
+    query = query.eq('id', serviceLookupValue);
+  } else {
+    query = query.ilike('service_name', serviceLookupValue);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const service = data?.[0] || null;
+  if (!service || service.is_active === false) {
+    throw new Error(`Service "${serviceLookupValue}" was not found.`);
+  }
+
+  serviceCache.set(cacheKey, service);
+  return service;
 }
 
 async function resolvePatient(serviceClient, patientCache, patientPayload, requesterUserId) {
@@ -655,6 +998,42 @@ async function upsertDentalRecord(serviceClient, dentalPayload, requesterUserId)
   return 'created';
 }
 
+async function upsertServiceRecord(serviceClient, servicePayload, requesterUserId) {
+  const { data: existingRows, error: fetchError } = await serviceClient
+    .from('service_records')
+    .select('id')
+    .eq('patient_id', servicePayload.patient_id)
+    .eq('service_id', servicePayload.service_id)
+    .eq('visit_at', servicePayload.visit_at)
+    .limit(1);
+
+  if (fetchError) throw fetchError;
+
+  if (existingRows?.[0]?.id) {
+    const { error: updateError } = await serviceClient
+      .from('service_records')
+      .update({
+        quantity: servicePayload.quantity,
+        unit_price: servicePayload.unit_price,
+        discount_amount: servicePayload.discount_amount,
+        notes: servicePayload.notes,
+        amount: servicePayload.amount,
+        updated_by: requesterUserId,
+      })
+      .eq('id', existingRows[0].id);
+
+    if (updateError) throw updateError;
+    return 'updated';
+  }
+
+  const { error: insertError } = await serviceClient
+    .from('service_records')
+    .insert(servicePayload);
+
+  if (insertError) throw insertError;
+  return 'created';
+}
+
 router.post('/import-patient-migration', async (req, res) => {
   const accessToken = `${req.headers.authorization || ''}`.replace(/^Bearer\s+/i, '').trim();
   const adminContext = await requireAdminRequester(accessToken);
@@ -682,8 +1061,6 @@ router.post('/import-patient-migration', async (req, res) => {
     totalRows: rows.length,
     patientsCreated: 0,
     patientsUpdated: 0,
-    dentalRecordsCreated: 0,
-    dentalRecordsUpdated: 0,
     skippedRows: 0,
     errors: [],
   };
@@ -706,18 +1083,6 @@ router.post('/import-patient-migration', async (req, res) => {
       } else if (resolvedPatient.mode === 'updated') {
         summary.patientsUpdated += 1;
       }
-
-      if (!hasDentalRecordData(row)) {
-        continue;
-      }
-
-      const dentalPayload = buildDentalRecordPayload(row, resolvedPatient.id, requesterUserId);
-      const dentalMode = await upsertDentalRecord(serviceClient, dentalPayload, requesterUserId);
-      if (dentalMode === 'created') {
-        summary.dentalRecordsCreated += 1;
-      } else {
-        summary.dentalRecordsUpdated += 1;
-      }
     } catch (error) {
       summary.skippedRows += 1;
       summary.errors.push(`Row ${rowNumber}: ${error.message || 'Import failed.'}`);
@@ -727,6 +1092,174 @@ router.post('/import-patient-migration', async (req, res) => {
   return res.json({
     ok: true,
     message: 'Patient migration import completed.',
+    summary,
+  });
+});
+
+router.post('/import-patient-records', async (req, res) => {
+  const accessToken = `${req.headers.authorization || ''}`.replace(/^Bearer\s+/i, '').trim();
+  const adminContext = await requireAdminRequester(accessToken);
+
+  if (adminContext.errorResponse) {
+    return res.status(adminContext.errorResponse.status).json(adminContext.errorResponse.payload);
+  }
+
+  const { serviceClient, requesterUserId } = adminContext;
+  const csvContent = typeof req.body?.csvContent === 'string' ? req.body.csvContent : '';
+  const fileName = normalizeString(req.body?.fileName) || 'patient-records-migrate-template.csv';
+
+  if (!csvContent.trim()) {
+    return res.status(400).json({ error: 'CSV content is required.' });
+  }
+
+  const rows = parseCsv(csvContent);
+  if (rows.length === 0) {
+    return res.status(400).json({ error: 'CSV file has no data rows.' });
+  }
+
+  const patientCache = new Map();
+  const serviceCache = new Map();
+  const validationLookups = await loadImportValidationLookups(serviceClient);
+  const summary = {
+    fileName,
+    totalRows: rows.length,
+    dentalRecordsCreated: 0,
+    dentalRecordsUpdated: 0,
+    serviceRecordsCreated: 0,
+    serviceRecordsUpdated: 0,
+    skippedRows: 0,
+    errors: [],
+  };
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const rowNumber = index + 2;
+
+    try {
+      const patientIdentifier = extractPatientImportIdentifier(row);
+      if (!patientIdentifier) {
+        summary.skippedRows += 1;
+        summary.errors.push(`Row ${rowNumber}: patient_id or patient_code is required.`);
+        continue;
+      }
+
+      const hasDentalData = hasDentalRecordData(row);
+      const hasServiceData = hasServiceRecordData(row);
+
+      if (!hasDentalData && !hasServiceData) {
+        summary.skippedRows += 1;
+        summary.errors.push(`Row ${rowNumber}: no dental or service record data was found.`);
+        continue;
+      }
+
+      const resolvedPatient = await resolvePatientForRecordImport(serviceClient, patientCache, patientIdentifier);
+
+      const expectedLastName = extractPatientLastName(row);
+      const expectedFirstName = extractPatientFirstName(row);
+
+      if (!expectedLastName || !expectedFirstName) {
+        throw new Error('Record rows require patient_last_name and patient_first_name together with patient_id.');
+      }
+
+      if (
+        resolvedPatient.last_name.toLowerCase() !== expectedLastName.toLowerCase()
+        || resolvedPatient.first_name.toLowerCase() !== expectedFirstName.toLowerCase()
+      ) {
+        throw new Error(
+          `Patient validation failed for patient ID "${patientIdentifier}": first name or last name does not match.`,
+        );
+      }
+
+      let dentalPayload = null;
+      if (hasDentalData) {
+        const dentalLegendIssues = validateDentalRecordLegendCodes(row, validationLookups.activeLegendCodes);
+        if (dentalLegendIssues.length > 0) {
+          throw new Error(dentalLegendIssues.join(' '));
+        }
+
+        dentalPayload = buildDentalRecordPayload(row, resolvedPatient.id, requesterUserId);
+      }
+
+      const servicePayloads = [];
+
+      if (hasServiceData) {
+        const serviceEntries = extractServiceEntries(row);
+        if (serviceEntries.length === 0) {
+          throw new Error('Service record rows require service data in service_record_* or service_1_* to service_10_* columns.');
+        }
+
+        for (const serviceEntry of serviceEntries) {
+          if (!serviceEntry.lookupValue) {
+            throw new Error(`Service slot ${serviceEntry.slot} requires service_${serviceEntry.slot}_name or service_${serviceEntry.slot}_id.`);
+          }
+
+          const resolvedService = await resolveServiceForImport(
+            serviceClient,
+            serviceCache,
+            serviceEntry.lookupValue,
+            validationLookups,
+          );
+          const providedUnitPrice = parseNumericValue(serviceEntry.unitPrice, null);
+          const expectedUnitPrice = roundCurrency(Number(resolvedService.price ?? 0));
+
+          if (providedUnitPrice === null) {
+            throw new Error(`Service slot ${serviceEntry.slot} is missing unit_price.`);
+          }
+
+          if (roundCurrency(providedUnitPrice) !== expectedUnitPrice) {
+            throw new Error(
+              `Service slot ${serviceEntry.slot} price mismatch for "${resolvedService.service_name}": CSV has ${providedUnitPrice}, system price is ${expectedUnitPrice}.`,
+            );
+          }
+
+          const normalizedServiceEntry = {
+            ...serviceEntry,
+            unitPrice: `${expectedUnitPrice}`,
+          };
+
+          const servicePayload = serviceEntry.slot === 1
+            && !normalizeString(row.service_1_name)
+            && !normalizeString(row.service_1_id)
+            ? buildServiceRecordPayload(
+              {
+                ...row,
+                service_record_unit_price: `${expectedUnitPrice}`,
+              },
+              resolvedPatient.id,
+              resolvedService.id,
+              requesterUserId,
+            )
+            : buildIndexedServiceRecordPayload(normalizedServiceEntry, resolvedPatient.id, resolvedService.id, requesterUserId);
+          servicePayloads.push(servicePayload);
+        }
+      }
+
+      if (dentalPayload) {
+        const dentalMode = await upsertDentalRecord(serviceClient, dentalPayload, requesterUserId);
+        if (dentalMode === 'created') {
+          summary.dentalRecordsCreated += 1;
+        } else {
+          summary.dentalRecordsUpdated += 1;
+        }
+      }
+
+      for (const servicePayload of servicePayloads) {
+        const serviceMode = await upsertServiceRecord(serviceClient, servicePayload, requesterUserId);
+        if (serviceMode === 'created') {
+          summary.serviceRecordsCreated += 1;
+        } else {
+          summary.serviceRecordsUpdated += 1;
+        }
+      }
+    } catch (error) {
+      summary.skippedRows += 1;
+      summary.errors.push(`Row ${rowNumber}: ${error.message || 'Import failed.'}`);
+    }
+  }
+
+  return res.json({
+    ok: true,
+    message: 'Patient records import completed.',
     summary,
   });
 });

@@ -382,7 +382,7 @@ const normalizeError = (error, fallback = 'Unexpected error occurred.') => {
   return fallback
 }
 
-const MISSING_AUDIT_USER_LABEL = 'User not found, it might be deleted'
+const MISSING_AUDIT_USER_LABEL = '-'
 
 const formatPatientCode = (patientCode, patientId) => {
   const raw = `${patientCode || ''}`.trim()
@@ -635,6 +635,19 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     if (!dentalRecordHistory.length) return null
     return dentalRecordHistory.find((entry) => entry.id === selectedDentalRecordId) ?? dentalRecordHistory[0]
   }, [dentalRecordHistory, selectedDentalRecordId])
+  const serviceMeta = useMemo(() => {
+    if (!serviceRows.length) {
+      return {
+        updatedAt: '',
+        updatedByName: '-',
+      }
+    }
+
+    return {
+      updatedAt: serviceRows[0]?.updatedAt || '',
+      updatedByName: serviceRows[0]?.by || '-',
+    }
+  }, [serviceRows])
   const totalDocumentBytes = useMemo(
     () => patientDocuments.reduce((sum, item) => sum + Math.max(0, Number(item.fileSize || 0)), 0),
     [patientDocuments],
@@ -2074,7 +2087,11 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       healthCheckedItems.push(healthOtherText.trim() ? `Others: ${healthOtherText.trim()}` : 'Others')
     }
     const healthChecked = healthCheckedItems.join(', ') || '-'
-    const allergenChecked = ALLERGENS.filter((item) => allergens.values[item]).join(', ') || '-'
+    const allergenCheckedItems = ALLERGENS.filter((item) => allergens.values[item])
+    if (allergens.others.trim()) {
+      allergenCheckedItems.push(`Others: ${allergens.others.trim()}`)
+    }
+    const allergenChecked = allergenCheckedItems.join(', ') || '-'
     const periodontalChecked = PERIODONTAL.filter((item) => dentalRecord.periodontal[item]).join(', ') || '-'
     const occlusionChecked = OCCLUSION.filter((item) => dentalRecord.occlusion[item]).join(', ') || '-'
     const conditionNameByCode = legendOptions.reduce((accumulator, legend) => {
@@ -2380,7 +2397,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <article className="pr-card">
                   <div className="pr-card-head">
                     <h3>Details</h3>
-                    <button type="button" className="mini-edit-btn" onClick={() => openPatientModal('details')}>&#9998;</button>
+                    <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('details')}>&#9998;</button>
                   </div>
                   <div className="pr-detail-list">
                     <div className="pr-detail-item pr-detail-item-compact"><span className="pr-detail-label">Nickname</span><span className="pr-detail-value">{patient.nickname || '-'}</span></div>
@@ -2406,7 +2423,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   <article className="pr-card">
                     <div className="pr-card-head">
                       <h3>Health Status</h3>
-                      <button type="button" className="mini-edit-btn" onClick={() => openPatientModal('health')}>&#9998;</button>
+                      <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('health')}>&#9998;</button>
                     </div>
                     <div className="mini-check-grid three-col health-status-grid">
                       {HEALTH.map((item) => <label key={item}><input type="checkbox" checked={health[item]} readOnly />{item}</label>)}
@@ -2421,7 +2438,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   <article className="pr-card">
                     <div className="pr-card-head">
                       <h3>Allergen Information</h3>
-                      <button type="button" className="mini-edit-btn" onClick={() => openPatientModal('allergen')}>&#9998;</button>
+                      <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('allergen')}>&#9998;</button>
                     </div>
                     <div className="mini-check-grid two-col allergen-info-grid">
                       {ALLERGENS.map((item) => <label key={item}><input type="checkbox" checked={allergens.values[item]} readOnly />{item}</label>)}
@@ -2440,7 +2457,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <article className="pr-card">
                   <div className="pr-card-head">
                     <h3>Dental History</h3>
-                    <button type="button" className="mini-edit-btn" onClick={() => openPatientModal('dental-history')}>&#9998;</button>
+                    <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('dental-history')}>&#9998;</button>
                   </div>
                   <div className="two-field-line"><p><strong>Name of Previous Dentist</strong><span>{dentalHistory.previous || '-'}</span></p><p><strong>Date of last exam</strong><span>{formatDateOnlyLong(dentalHistory.lastExam)}</span></p></div>
                   <p className="single-field-line"><strong>What is the reason for Dental Consultation</strong><span>{dentalHistory.reason || '-'}</span></p>
@@ -2461,7 +2478,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <article className="pr-card">
                   <div className="pr-card-head">
                     <h3>Medical History</h3>
-                    <button type="button" className="mini-edit-btn" onClick={() => openPatientModal('medical-history')}>&#9998;</button>
+                    <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('medical-history')}>&#9998;</button>
                   </div>
                   <div className="two-field-line"><p><strong>Name of Physician/Medical Doctor</strong><span>{medicalHistory.physician || '-'}</span></p><p><strong>Specialty (if available)</strong><span>{medicalHistory.specialty || '-'}</span></p></div>
                   <p className="single-field-line"><strong>Address</strong><span>{medicalHistory.address || '-'}</span></p>
@@ -2546,13 +2563,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               <div key={row.id} className="service-list-row">
                 <span>{formatDateOnly(row.date)}</span>
                 <button type="button" className="view" onClick={() => { setSelectedService(row); setModal('service-view') }}>View</button>
-                <button type="button" className="mini-edit-btn" onClick={() => openServiceEdit(row)}>&#9998;</button>
+                <button type="button" className="mini-edit-btn" title="Update" onClick={() => openServiceEdit(row)}>&#9998;</button>
               </div>
             ))}
             {serviceRows.length === 0 ? <p>No service records yet.</p> : null}
           </article>
         ) : null}
 
+        {tab === 'service' ? <div className="pr-meta-row service-meta-row"><span>Date of last changes: {formatDateTimeLong(serviceMeta.updatedAt)}</span><span>Last changes by: {serviceMeta.updatedByName}</span></div> : null}
         <div className="panel-footer details-footer"><button type="button" className="ghost back-records-btn" onClick={() => navigate('/records')}>Back to Records</button></div>
       </section>
 
@@ -2899,7 +2917,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
             <div className="pr-dental-chart">{renderDentalSection(DENTAL_CHART_IMAGES[0], TOOTH_NUMBERS_BY_CHART.chart1, 'modal-chart-1', TOOTH_X_POSITIONS_BY_CHART.chart1, dentalRecordForm.toothMap, (tooth, value) => setDentalRecordForm((previous) => ({ ...previous, toothMap: { ...previous.toothMap, [tooth]: value } })))}<div className="pr-dental-divider" />{renderDentalSection(DENTAL_CHART_IMAGES[1], TOOTH_NUMBERS_BY_CHART.chart2, 'modal-chart-2', TOOTH_X_POSITIONS_BY_CHART.chart2, dentalRecordForm.toothMap, (tooth, value) => setDentalRecordForm((previous) => ({ ...previous, toothMap: { ...previous.toothMap, [tooth]: value } })))}</div>
 
             <div className="pr-modal-section-title">Fill the Details</div>
-            <div className="pr-dental-modal-notes"><label>Dental Prescriptions<textarea value={dentalRecordForm.prescriptions} onChange={(event) => setDentalRecordForm((previous) => ({ ...previous, prescriptions: event.target.value }))} /></label><label>Dental Notes<textarea value={dentalRecordForm.notes} onChange={(event) => setDentalRecordForm((previous) => ({ ...previous, notes: event.target.value }))} /></label></div>
+            <div className="pr-dental-modal-notes"><label>Dental Prescriptions<textarea maxLength={400} value={dentalRecordForm.prescriptions} onChange={(event) => setDentalRecordForm((previous) => ({ ...previous, prescriptions: event.target.value }))} /></label><label>Dental Notes<textarea maxLength={400} value={dentalRecordForm.notes} onChange={(event) => setDentalRecordForm((previous) => ({ ...previous, notes: event.target.value }))} /></label></div>
             <div className="modal-actions center"><button type="button" className="danger-btn" onClick={close}>Cancel</button><button type="button" className="success-btn" onClick={() => { void saveDentalRecord() }} disabled={isSaving || currentRole === 'receptionist'}>Next: Add Service</button></div>
           </div>
         </div>

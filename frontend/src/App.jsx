@@ -10,10 +10,12 @@ import AddPatient from './pages/AddPatient'
 import Procedures from './pages/Procedures'
 import PatientLogs from './pages/PatientLogs'
 import Admin from './pages/Admin'
+import AdminImport from './pages/AdminImport'
 import ResetPassword from './pages/ResetPassword'
 import Settings from './pages/Settings'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX, clearSessionStorageByPrefix } from './hooks/useSessionStorageState'
 import { isAccessTokenExpired, missingSupabaseEnv, supabase } from './lib/supabaseClient'
+import dentalLogo from './assets/DENTAL LOGO.png'
 
 const ADD_PATIENT_DRAFT_KEY = 'dent22.addPatientDraft.v1'
 const LAST_PROTECTED_ROUTE_KEY = 'dent22.lastProtectedRoute'
@@ -21,10 +23,25 @@ const APP_UI_STORAGE_PREFIX = `${UI_SESSION_STORAGE_PREFIX}app.`
 const PLACEHOLDER_EMAIL_DOMAINS = ['@smilesdentalhub.local', '@dent22.local']
 const BACKEND_STARTING_ERROR = 'BACKEND_STARTING_ERROR'
 const INACTIVITY_LOGOUT_MS = 15 * 60 * 1000
+const LOGIN_TRANSITION_MIN_MS = 1800
 
 const sleep = (ms) => new Promise((resolve) => {
   window.setTimeout(resolve, ms)
 })
+
+function AppLoadingScreen({ label = 'Loading...' }) {
+  return (
+    <div className="app-loading app-loading-screen" aria-live="polite" aria-busy="true">
+      <div className="app-loading-card">
+        <p className="app-loading-label">{label}</p>
+        <div className="app-loading-logo-shell">
+          <div className="app-loading-logo-ring" aria-hidden="true" />
+          <img className="app-loading-logo" src={dentalLogo} alt="Smiles Dental Hub" />
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const waitForBackendReady = async ({ attempts = 6, delayMs = 500 } = {}) => {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -129,6 +146,9 @@ function LoginRoute({
   onLogin,
   form,
   error,
+  onErrorClose,
+  logoutNotice,
+  onLogoutNoticeClose,
   isLoggingIn,
   showPassword,
   onChange,
@@ -158,6 +178,9 @@ function LoginRoute({
     <Login
       form={form}
       error={error}
+      onErrorClose={onErrorClose}
+      logoutNotice={logoutNotice}
+      onLogoutNoticeClose={onLogoutNoticeClose}
       isLoggingIn={isLoggingIn}
       showPassword={showPassword}
       onChange={onChange}
@@ -196,14 +219,15 @@ function ProtectedLayout({ onLogout, navItems, role, profile, sessionUser, onPro
       <Sidebar onLogout={onLogout} navItems={navItems} isLogoutModalOpen={isLogoutModalOpen} />
       <main className={`dashboard-main ${isPatientRecordsRoute ? 'dashboard-main-no-scroll' : ''}`}>
         <Routes>
-          <Route path="/home" element={<Home currentProfile={profile} />} />
-          <Route path="/records" element={<PatientRecords />} />
-          <Route path="/records/:id" element={<PatientRecordDetails currentRole={role} currentProfile={profile} />} />
-          <Route path="/add-patient" element={<AddPatient />} />
-          <Route path="/procedure" element={<Procedures currentProfile={profile} />} />
-          <Route path="/logs" element={<PatientLogs />} />
-          <Route path="/settings" element={<Settings currentProfile={profile} currentSessionUser={sessionUser} onProfileChange={onProfileChange} />} />
-          {role === 'admin' ? <Route path="/admin" element={<Admin currentProfile={profile} />} /> : <Route path="/admin" element={<Navigate to="/home" replace />} />}
+          <Route path="home" element={<Home currentProfile={profile} />} />
+          <Route path="records" element={<PatientRecords />} />
+          <Route path="records/:id" element={<PatientRecordDetails currentRole={role} currentProfile={profile} />} />
+          <Route path="add-patient" element={<AddPatient />} />
+          <Route path="procedure" element={<Procedures currentProfile={profile} />} />
+          <Route path="logs" element={<PatientLogs />} />
+          <Route path="settings" element={<Settings currentProfile={profile} currentSessionUser={sessionUser} onProfileChange={onProfileChange} />} />
+          {role === 'admin' ? <Route path="admin" element={<Admin currentProfile={profile} />} /> : <Route path="admin" element={<Navigate to="/home" replace />} />}
+          {role === 'admin' ? <Route path="admin/import" element={<AdminImport />} /> : <Route path="admin/import" element={<Navigate to="/home" replace />} />}
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </main>
@@ -219,6 +243,7 @@ function AppRoutes() {
   const [isLoginTransitioning, setIsLoginTransitioning] = useState(false)
   const [isLoggingIn, setIsLoggingIn] = useState(false)
   const [error, setError] = useState('')
+  const [logoutNotice, setLogoutNotice] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [form, setForm] = useState({ username: '', password: '' })
   const [forgotUsername, setForgotUsername] = useState('')
@@ -251,6 +276,7 @@ function AppRoutes() {
   const profileUserIdRef = useRef(null)
   const onboardingUserIdRef = useRef(null)
   const inactivityTimerRef = useRef(null)
+  const loginTransitionStartedAtRef = useRef(0)
   const location = useLocation()
   const navigate = useNavigate()
 
@@ -292,6 +318,7 @@ function AppRoutes() {
       label: row.item_key === 'settings' ? 'Profile' : row.label,
       path: row.path,
     })))
+    setLogoutNotice('')
     setError('')
     return true
   }, [])
@@ -324,7 +351,8 @@ function AppRoutes() {
     setIsLogoutModalOpen(false)
     clearSessionStorageByPrefix(UI_SESSION_STORAGE_PREFIX)
     sessionStorage.removeItem(ADD_PATIENT_DRAFT_KEY)
-    setError(message)
+    setLogoutNotice(message)
+    setError('')
     navigate(redirectPath, { replace: true })
   }, [navigate])
 
@@ -393,7 +421,12 @@ function AppRoutes() {
         setIsBootstrapping(false)
       }
       if (isMounted) {
+        const elapsed = Date.now() - loginTransitionStartedAtRef.current
+        if (loginTransitionStartedAtRef.current && elapsed < LOGIN_TRANSITION_MIN_MS) {
+          await sleep(LOGIN_TRANSITION_MIN_MS - elapsed)
+        }
         setIsLoginTransitioning(false)
+        loginTransitionStartedAtRef.current = 0
       }
     }
 
@@ -1055,6 +1088,7 @@ function AppRoutes() {
         return
       }
 
+      loginTransitionStartedAtRef.current = Date.now()
       setIsLoginTransitioning(true)
     } catch (requestError) {
       setError(
@@ -1073,6 +1107,14 @@ function AppRoutes() {
 
   const handleLogoutRequest = () => {
     setIsLogoutModalOpen(true)
+  }
+
+  const handleLoginErrorClose = () => {
+    setError('')
+  }
+
+  const handleLogoutNoticeClose = () => {
+    setLogoutNotice('')
   }
 
   const closeLogoutModal = () => {
@@ -1106,7 +1148,7 @@ function AppRoutes() {
   }
 
   if (isBootstrapping || isLoginTransitioning) {
-    return <div className="app-loading">{isLoginTransitioning ? 'Signing in...' : 'Loading...'}</div>
+    return <AppLoadingScreen label={isLoginTransitioning ? 'Loading...' : 'Loading...'} />
   }
 
   if (!supabase) {
@@ -1140,6 +1182,9 @@ function AppRoutes() {
               onLogin={handleSubmit}
               form={form}
               error={error}
+              onErrorClose={handleLoginErrorClose}
+              logoutNotice={logoutNotice}
+              onLogoutNoticeClose={handleLogoutNoticeClose}
               isLoggingIn={isLoggingIn}
               showPassword={showPassword}
               onChange={handleChange}

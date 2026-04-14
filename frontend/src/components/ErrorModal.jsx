@@ -2,7 +2,7 @@ function ErrorModal({ message, onClose, title = 'Notice' }) {
   if (!message) return null
 
   return (
-    <>
+    <div className="error-modal-layer">
       <div className="error-modal-backdrop" onClick={onClose} />
       <div className="pr-modal procedures-modal procedures-error-modal" role="dialog" aria-modal="true" aria-labelledby="global-error-title">
         <div className="pr-modal-head"><h2 id="global-error-title">{title}</h2></div>
@@ -13,7 +13,7 @@ function ErrorModal({ message, onClose, title = 'Notice' }) {
           </div>
         </div>
       </div>
-    </>
+    </div>
   )
 }
 
