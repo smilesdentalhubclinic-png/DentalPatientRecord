@@ -153,6 +153,30 @@ function resolveHistoryField(row, compactKey, answerKey, noteKey) {
   return resolveCompactAnswerAndNote(row[compactKey]);
 }
 
+function firstNonEmptyValue(row, keys) {
+  for (const key of keys) {
+    const value = row[key];
+    if (normalizeString(value)) {
+      return value;
+    }
+  }
+  return '';
+}
+
+function resolveHistoryFieldFromAliases(row, aliases) {
+  const explicitNote = normalizeString(firstNonEmptyValue(row, aliases.noteKeys));
+  const explicitAnswer = normalizeYesNo(firstNonEmptyValue(row, aliases.answerKeys));
+
+  if (explicitAnswer || explicitNote) {
+    return {
+      answer: resolveAnswerWithOptionalNote(explicitAnswer, explicitNote),
+      note: explicitNote,
+    };
+  }
+
+  return resolveCompactAnswerAndNote(firstNonEmptyValue(row, aliases.compactKeys));
+}
+
 function normalizePhone(value) {
   const digits = `${value ?? ''}`.replace(/\D/g, '');
   if (!digits) return null;
@@ -168,6 +192,12 @@ function parseDateValue(value) {
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
 
+  const ymdSlashMatch = raw.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (ymdSlashMatch) {
+    const [, year, month, day] = ymdSlashMatch;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+
   const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (slashMatch) {
     const [, month, day, year] = slashMatch;
@@ -182,6 +212,13 @@ function parseDateValue(value) {
 function parseTimestampValue(value) {
   const raw = normalizeString(value);
   if (!raw) return null;
+
+  const ymdSlashMatch = raw.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (ymdSlashMatch) {
+    const [, year, month, day] = ymdSlashMatch;
+    return new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T00:00:00.000Z`).toISOString();
+  }
+
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
@@ -373,13 +410,20 @@ function buildMedicalHistory(row) {
   for (let index = 1; index <= 10; index += 1) {
     const fieldKey = fieldKeys[index - 1];
     const compactKey = `medical_q${index}_${fieldKey}`;
+    const shortCompactKey = `medical_q${index}`;
     const answerKey = `medical_q${index}_${fieldKey}_answer`;
+    const shortAnswerKey = `${shortCompactKey}_answer`;
     const noteKey = `medical_q${index}_${fieldKey}_note`;
+    const shortNoteKey = `${shortCompactKey}_note`;
     const resolved = noteEnabledIndexes.has(index - 1)
-      ? resolveHistoryField(row, compactKey, answerKey, noteKey)
+      ? resolveHistoryFieldFromAliases(row, {
+        compactKeys: [shortCompactKey, compactKey],
+        answerKeys: [shortAnswerKey, answerKey],
+        noteKeys: [shortNoteKey, noteKey],
+      })
       : {
-        answer: normalizeYesNo(row[answerKey] || row[compactKey]),
-        note: normalizeString(row[noteKey]),
+        answer: normalizeYesNo(firstNonEmptyValue(row, [shortAnswerKey, answerKey, shortCompactKey, compactKey])),
+        note: normalizeString(firstNonEmptyValue(row, [shortNoteKey, noteKey])),
       };
 
     answers[`${index - 1}`] = resolved.answer;
@@ -425,13 +469,20 @@ function buildDentalHistory(row) {
 
   fieldNames.forEach((name, index) => {
     const compactKey = `dental_q${index + 1}_${name}`;
+    const shortCompactKey = `dental_q${index + 1}`;
     const answerKey = `dental_q${index + 1}_${name}_answer`;
+    const shortAnswerKey = `${shortCompactKey}_answer`;
     const noteKey = `dental_q${index + 1}_${name}_note`;
+    const shortNoteKey = `${shortCompactKey}_note`;
     const resolved = index === 1
-      ? resolveHistoryField(row, compactKey, answerKey, noteKey)
+      ? resolveHistoryFieldFromAliases(row, {
+        compactKeys: [shortCompactKey, compactKey],
+        answerKeys: [shortAnswerKey, answerKey],
+        noteKeys: [shortNoteKey, noteKey],
+      })
       : {
-        answer: normalizeYesNo(row[answerKey] || row[compactKey]),
-        note: normalizeString(row[noteKey]),
+        answer: normalizeYesNo(firstNonEmptyValue(row, [shortAnswerKey, answerKey, shortCompactKey, compactKey])),
+        note: normalizeString(firstNonEmptyValue(row, [shortNoteKey, noteKey])),
       };
 
     answers[`${index}`] = resolved.answer;

@@ -2,9 +2,11 @@ import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
-
-const PATIENT_TEMPLATE_PATH = '/templates/patient-information-template.csv'
-const RECORDS_TEMPLATE_PATH = '/templates/dental-and-service-records-template.csv'
+import {
+  downloadPatientTemplateWorkbook,
+  downloadRecordsTemplateWorkbook,
+  readImportFileAsCsv,
+} from '../utils/patientImportTemplate'
 
 const classifyLogLine = (line) => {
   if (line.startsWith('[error]') || line.startsWith('[row-error]')) return 'error'
@@ -26,9 +28,11 @@ function ImportCard({
   onChoose,
   onImport,
   actionLabel,
+  inputAccept = '.csv,text/csv',
   templateHref,
   templateLabel,
   templateDownloadName,
+  onTemplateDownload,
 }) {
   return (
     <section className="admin-import-workspace-card">
@@ -37,15 +41,21 @@ function ImportCard({
         <p>{description}</p>
       </div>
       <div className="admin-import-actions admin-import-actions-rich">
-        <input ref={inputRef} type="file" accept=".csv,text/csv" onChange={onChoose} />
-        <button type="button" className="ghost" onClick={() => inputRef.current?.click()}>Choose CSV File</button>
+        <input ref={inputRef} type="file" accept={inputAccept} onChange={onChoose} />
+        <button type="button" className="ghost" onClick={() => inputRef.current?.click()}>Choose File</button>
         <span>{fileName || 'No file selected yet.'}</span>
       </div>
       <p className="admin-import-helper">{helper}</p>
       <div className="admin-import-card-actions">
-        <a className="ghost admin-import-download-btn" href={templateHref} download={templateDownloadName}>
-          {templateLabel}
-        </a>
+        {onTemplateDownload ? (
+          <button type="button" className="ghost admin-import-download-btn" onClick={() => { void onTemplateDownload() }}>
+            {templateLabel}
+          </button>
+        ) : (
+          <a className="ghost admin-import-download-btn" href={templateHref} download={templateDownloadName}>
+            {templateLabel}
+          </a>
+        )}
         <button type="button" className="success-btn" onClick={onImport} disabled={isImporting}>
           {isImporting ? 'Importing...' : actionLabel}
         </button>
@@ -67,7 +77,7 @@ function AdminImport() {
   const [isImportingPatients, setIsImportingPatients] = useState(false)
   const [isImportingRecords, setIsImportingRecords] = useState(false)
   const [importLogLines, setImportLogLines] = useState([
-    '[ready] Import workspace initialized. Choose a CSV file to begin.',
+    '[ready] Import workspace initialized. Choose a patient Excel file or a CSV file to begin.',
   ])
 
   const appendLogLines = (lines) => {
@@ -117,29 +127,30 @@ function AdminImport() {
     }
 
     try {
-      const text = await file.text()
       if (type === 'patients') {
+        const text = await readImportFileAsCsv(file)
         setPatientImportCsvContent(text)
         setPatientImportFileName(file.name)
         setPatientImportSummary(null)
-        appendLogLines([`[file] Patient CSV selected: ${file.name}`])
+        appendLogLines([`[file] Patient file selected: ${file.name}`])
       } else {
+        const text = await readImportFileAsCsv(file)
         setRecordsImportCsvContent(text)
         setRecordsImportFileName(file.name)
         setRecordsImportSummary(null)
-        appendLogLines([`[file] Records CSV selected: ${file.name}`])
+        appendLogLines([`[file] Records file selected: ${file.name}`])
       }
       setImportError('')
     } catch {
-      setImportError('Unable to read the selected CSV file.')
-      appendLogLines(['[error] Unable to read the selected CSV file.'])
+      setImportError('Unable to read the selected file.')
+      appendLogLines(['[error] Unable to read the selected file.'])
     }
   }
 
   const importPatientMigration = async () => {
     if (!patientImportCsvContent.trim()) {
-      setImportError('Please choose the patient information CSV first.')
-      appendLogLines(['[error] Patient import was blocked because no patient CSV was selected.'])
+      setImportError('Please choose the patient information file first.')
+      appendLogLines(['[error] Patient import was blocked because no patient file was selected.'])
       return
     }
 
@@ -171,15 +182,15 @@ function AdminImport() {
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        setImportError(payload?.error || 'Unable to import the patient CSV.')
-        appendLogLines([`[error] Patient import failed: ${payload?.error || 'Unable to import the patient CSV.'}`])
+        setImportError(payload?.error || 'Unable to import the patient file.')
+        appendLogLines([`[error] Patient import failed: ${payload?.error || 'Unable to import the patient file.'}`])
         return
       }
 
       setPatientImportSummary(payload?.summary || null)
       appendLogLines(buildSummaryLogLines('Patient', payload?.summary || null))
     } catch {
-      setImportError('Unable to import the patient CSV.')
+      setImportError('Unable to import the patient file.')
       appendLogLines(['[error] Patient import failed because the request could not be completed.'])
     } finally {
       setIsImportingPatients(false)
@@ -188,8 +199,8 @@ function AdminImport() {
 
   const importPatientRecords = async () => {
     if (!recordsImportCsvContent.trim()) {
-      setImportError('Please choose the dental and service records CSV first.')
-      appendLogLines(['[error] Records import was blocked because no records CSV was selected.'])
+      setImportError('Please choose the dental and service records file first.')
+      appendLogLines(['[error] Records import was blocked because no records file was selected.'])
       return
     }
 
@@ -221,15 +232,15 @@ function AdminImport() {
 
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
-        setImportError(payload?.error || 'Unable to import the dental and service records CSV.')
-        appendLogLines([`[error] Records import failed: ${payload?.error || 'Unable to import the dental and service records CSV.'}`])
+        setImportError(payload?.error || 'Unable to import the dental and service records file.')
+        appendLogLines([`[error] Records import failed: ${payload?.error || 'Unable to import the dental and service records file.'}`])
         return
       }
 
       setRecordsImportSummary(payload?.summary || null)
       appendLogLines(buildSummaryLogLines('Records', payload?.summary || null))
     } catch {
-      setImportError('Unable to import the dental and service records CSV.')
+      setImportError('Unable to import the dental and service records file.')
       appendLogLines(['[error] Records import failed because the request could not be completed.'])
     } finally {
       setIsImportingRecords(false)
@@ -252,43 +263,43 @@ function AdminImport() {
         <div className="admin-import-hero">
           <div className="admin-import-hero-copy">
             <h2>Patient Migration</h2>
-            <p>This page is for uploading patient files that were taken from physical paper records and transferring them into the system. Use the patient information CSV and the dental and service records CSV to move the encoded data into the digital patient record database.</p>
+            <p>This page is for uploading patient files that were taken from physical paper records and transferring them into the system. Use the patient information file and the dental and service records file to move the encoded data into the digital patient record database.</p>
           </div>
         </div>
 
         <div className="admin-import-submission-column">
           <section className="admin-import-column-header">
             <h2>Submission Fields</h2>
-            <p>Choose the CSV, review the expected format, and run the import when ready.</p>
+            <p>Choose the file, review the expected format, and run the import when ready.</p>
           </section>
 
           <div className="admin-import-card-row">
             <ImportCard
-              title="Patient Information CSV"
-              helper="Please ensure that there is no existing patient in the system before importing, and make sure that all patient details you entered are complete and correct."
+              title="Patient Information File"
+              helper="Download the Excel template, fill in the Patient Information sheet, then upload the completed .xlsx file. CSV is still accepted if needed."
               fileName={patientImportFileName}
               inputRef={patientImportFileInputRef}
               isImporting={isImportingPatients}
               onChoose={(event) => { void handleImportFileChange(event, 'patients') }}
               onImport={() => { void importPatientMigration() }}
-              actionLabel="Process Patient CSV"
-              templateHref={PATIENT_TEMPLATE_PATH}
+              inputAccept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              actionLabel="Process Patient File"
               templateLabel="Download Patient Template"
-              templateDownloadName="patient-information-template.csv"
+              onTemplateDownload={downloadPatientTemplateWorkbook}
             />
 
             <ImportCard
-              title="Dental and Service Records CSV"
-              helper="Make sure the patient already exists and all record details are correct before importing."
+              title="Dental and Service Records File"
+              helper="Download the Excel template, fill in the Dental and Service Records sheet, then upload the completed .xlsx file. The second sheet contains sample examples only."
               fileName={recordsImportFileName}
               inputRef={recordsImportFileInputRef}
               isImporting={isImportingRecords}
               onChoose={(event) => { void handleImportFileChange(event, 'records') }}
               onImport={() => { void importPatientRecords() }}
-              actionLabel="Process Records CSV"
-              templateHref={RECORDS_TEMPLATE_PATH}
+              inputAccept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              actionLabel="Process Records File"
               templateLabel="Download Records Template"
-              templateDownloadName="dental-and-service-records-template.csv"
+              onTemplateDownload={downloadRecordsTemplateWorkbook}
             />
           </div>
         </div>
