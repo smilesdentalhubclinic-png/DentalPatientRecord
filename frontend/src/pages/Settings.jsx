@@ -168,6 +168,8 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
   })
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [showNewPassword, setShowNewPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [newEmail, setNewEmail] = useState('')
   const [emailVerificationCode, setEmailVerificationCode] = useSessionStorageState(`${SETTINGS_UI_STORAGE_PREFIX}emailVerificationCode`, '')
   const [pendingEmailVerification, setPendingEmailVerification] = useSessionStorageState(`${SETTINGS_UI_STORAGE_PREFIX}pendingEmailVerification`, '')
@@ -708,30 +710,116 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
                   <div className="history-top-grid settings-grid settings-security-grid">
                     <label>
                       New Password
-                      <input
-                        type="password"
-                        value={newPassword}
-                        onChange={(event) => {
-                          setNewPassword(event.target.value)
-                          setError('')
-                        }}
-                        autoComplete="new-password"
-                        disabled={isSubmitting}
-                      />
+                      <div className="password-field settings-password-field">
+                        <input
+                          type={showNewPassword ? 'text' : 'password'}
+                          value={newPassword}
+                          onChange={(event) => {
+                            setNewPassword(event.target.value)
+                            setError('')
+                          }}
+                          autoComplete="new-password"
+                          disabled={isSubmitting}
+                        />
+                        <button
+                          type="button"
+                          className="eye-toggle"
+                          onClick={() => setShowNewPassword((previous) => !previous)}
+                          aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                          title={showNewPassword ? 'Hide password' : 'Show password'}
+                          disabled={isSubmitting}
+                        >
+                          <svg
+                            className="eye-icon"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            aria-hidden
+                          >
+                            <path
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                              d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"
+                            />
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="3"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                            />
+                            {!showNewPassword ? (
+                              <line
+                                x1="4"
+                                y1="4"
+                                x2="20"
+                                y2="20"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                              />
+                            ) : null}
+                          </svg>
+                        </button>
+                      </div>
                     </label>
 
                     <label>
                       Confirm Password
-                      <input
-                        type="password"
-                        value={confirmPassword}
-                        onChange={(event) => {
-                          setConfirmPassword(event.target.value)
-                          setError('')
-                        }}
-                        autoComplete="new-password"
-                        disabled={isSubmitting}
-                      />
+                      <div className="password-field settings-password-field">
+                        <input
+                          type={showConfirmPassword ? 'text' : 'password'}
+                          value={confirmPassword}
+                          onChange={(event) => {
+                            setConfirmPassword(event.target.value)
+                            setError('')
+                          }}
+                          autoComplete="new-password"
+                          disabled={isSubmitting}
+                        />
+                        <button
+                          type="button"
+                          className="eye-toggle"
+                          onClick={() => setShowConfirmPassword((previous) => !previous)}
+                          aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                          title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                          disabled={isSubmitting}
+                        >
+                          <svg
+                            className="eye-icon"
+                            xmlns="http://www.w3.org/2000/svg"
+                            viewBox="0 0 24 24"
+                            aria-hidden
+                          >
+                            <path
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                              d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"
+                            />
+                            <circle
+                              cx="12"
+                              cy="12"
+                              r="3"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                            />
+                            {!showConfirmPassword ? (
+                              <line
+                                x1="4"
+                                y1="4"
+                                x2="20"
+                                y2="20"
+                                stroke="currentColor"
+                                strokeWidth="1.6"
+                                strokeLinecap="round"
+                              />
+                            ) : null}
+                          </svg>
+                        </button>
+                      </div>
                     </label>
                   </div>
 

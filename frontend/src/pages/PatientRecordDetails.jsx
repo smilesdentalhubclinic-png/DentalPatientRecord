@@ -6,6 +6,7 @@ import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
+import { findExistingPatientRecord, isPatientDuplicateError } from '../utils/patientDuplicateCheck'
 
 const HEALTH = [
   'Low Blood Pressure',
@@ -1362,7 +1363,11 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       setModal(null)
       await loadPatient()
     } catch (updateError) {
-      setError(normalizeError(updateError, 'Unable to update patient information.'))
+      setError(
+        isPatientDuplicateError(updateError)
+          ? 'A patient with the same name, sex, and birthdate already exists.'
+          : normalizeError(updateError, 'Unable to update patient information.'),
+      )
     } finally {
       setIsSaving(false)
     }
@@ -1406,6 +1411,26 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     }
     if (patient.guardianMobileNumber.trim() && !normalizedGuardianMobile) {
       setError('Enter a valid guardian mobile number.')
+      return
+    }
+
+    try {
+      const duplicatePatient = await findExistingPatientRecord(supabase, {
+        firstName: toTitleCase(patient.firstName.trim()),
+        lastName: toTitleCase(patient.lastName.trim()),
+        sex: normalizeSex(patient.sex),
+        birthdate: patient.birthdate,
+        excludeId: id,
+      })
+
+      if (duplicatePatient) {
+        setError(
+          `Existing record found (${formatPatientCode(duplicatePatient.patient_code, duplicatePatient.id)} - ${duplicatePatient.last_name}, ${duplicatePatient.first_name}).`,
+        )
+        return
+      }
+    } catch (duplicateCheckError) {
+      setError(duplicateCheckError?.message || 'Unable to validate existing patient records.')
       return
     }
 

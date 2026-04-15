@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
+import { findExistingPatientRecord, isPatientDuplicateError } from '../utils/patientDuplicateCheck'
 
 const STEPS = ['Patient Information', 'Medical History', 'Dental History', 'Authorization']
 const SEX_OPTIONS = ['Male', 'Female']
@@ -546,34 +547,17 @@ function AddPatient() {
     return true
   }
 
-  const findExistingPatientRecord = async () => {
-    const normalizedLastName = `${patientInfo.lastName || ''}`.trim().replace(/\s+/g, ' ')
-    const normalizedFirstName = `${patientInfo.firstName || ''}`.trim().replace(/\s+/g, ' ')
-    const normalizedSex = `${patientInfo.sex || ''}`.trim()
-    const normalizedBirthdate = `${patientInfo.birthdate || ''}`.trim()
-
-    if (!normalizedLastName || !normalizedFirstName || !normalizedBirthdate || !normalizedSex) return null
-
-    const { data, error: duplicateCheckError } = await supabase
-      .from('patients')
-      .select('id, patient_code, first_name, last_name, birth_date, sex, archived_at')
-      .ilike('last_name', normalizedLastName)
-      .ilike('first_name', normalizedFirstName)
-      .eq('birth_date', normalizedBirthdate)
-      .eq('sex', normalizedSex)
-      .is('archived_at', null)
-      .limit(1)
-
-    if (duplicateCheckError) throw duplicateCheckError
-    return data?.[0] ?? null
-  }
-
   const nextStep = async () => {
     if (activeStep === 0) {
       if (!validatePatientInformationStep()) return
 
       try {
-        const duplicatePatient = await findExistingPatientRecord()
+        const duplicatePatient = await findExistingPatientRecord(supabase, {
+          firstName: patientInfo.firstName,
+          lastName: patientInfo.lastName,
+          sex: patientInfo.sex,
+          birthdate: patientInfo.birthdate,
+        })
         if (duplicatePatient) {
           setInvalidPatientFields((previous) => ({
             ...previous,
@@ -812,7 +796,12 @@ function AddPatient() {
     }
 
     try {
-      const duplicatePatient = await findExistingPatientRecord()
+      const duplicatePatient = await findExistingPatientRecord(supabase, {
+        firstName: patientInfo.firstName,
+        lastName: patientInfo.lastName,
+        sex: patientInfo.sex,
+        birthdate: patientInfo.birthdate,
+      })
       if (duplicatePatient) {
         setInvalidPatientFields((previous) => ({
           ...previous,
@@ -844,7 +833,11 @@ function AddPatient() {
       setIsSubmitSuccessOpen(true)
     } catch (submitError) {
       const fallback = 'Unable to save patient record.'
-      setValidationMessage(submitError?.message || fallback)
+      setValidationMessage(
+        isPatientDuplicateError(submitError)
+          ? 'A patient with the same name, sex, and birthdate already exists.'
+          : (submitError?.message || fallback),
+      )
     } finally {
       setIsSubmitting(false)
     }

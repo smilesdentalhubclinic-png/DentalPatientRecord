@@ -1071,9 +1071,9 @@ router.post('/import-patient-migration', async (req, res) => {
 
     try {
       const patientPayload = buildPatientPayload(row, requesterUserId);
-      if (!patientPayload.first_name || !patientPayload.last_name || !patientPayload.sex) {
+      if (!patientPayload.first_name || !patientPayload.last_name || !patientPayload.sex || !patientPayload.birth_date) {
         summary.skippedRows += 1;
-        summary.errors.push(`Row ${rowNumber}: first_name, last_name, and sex are required.`);
+        summary.errors.push(`Row ${rowNumber}: first_name, last_name, sex, and birth_date are required.`);
         continue;
       }
 

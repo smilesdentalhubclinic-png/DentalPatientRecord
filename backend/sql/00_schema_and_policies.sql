@@ -1177,6 +1177,15 @@ using (
 );
 
 create index if not exists idx_patients_name on public.patients(last_name, first_name);
+create unique index if not exists idx_patients_identity_active_unique
+on public.patients (
+  lower(regexp_replace(btrim(first_name), '\s+', ' ', 'g')),
+  lower(regexp_replace(btrim(last_name), '\s+', ' ', 'g')),
+  sex,
+  birth_date
+)
+where archived_at is null
+  and birth_date is not null;
 create index if not exists idx_patients_is_active on public.patients(is_active);
 create index if not exists idx_patient_logs_patient_id on public.patient_logs(patient_id, created_at desc);
 create index if not exists idx_service_records_patient_id on public.service_records(patient_id, visit_at desc);
