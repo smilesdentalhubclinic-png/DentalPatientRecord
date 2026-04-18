@@ -464,21 +464,24 @@ router.post('/forgot-password', async (req, res) => {
     const login = normalizeString(req.body?.login);
 
     if (!login) {
-      return res.status(400).json({ error: 'login is required.' });
+      return res.status(400).json({ error: 'email is required.' });
+    }
+    if (!EMAIL_PATTERN.test(login)) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
     }
     if (!isSmtpConfigured()) {
       return res.status(500).json({ error: 'SMTP is not configured for verification emails.' });
     }
 
-    const resolvedEmail = login.includes('@') ? login.toLowerCase() : await resolveLoginEmail(login);
+    const resolvedEmail = login.toLowerCase();
     if (!resolvedEmail) {
-      return res.status(404).json({ error: 'No active staff account found for that login.' });
+      return res.status(404).json({ error: 'No active staff account found for that email.' });
     }
 
     const serviceClient = createSupabaseClient({ useServiceRole: true });
     const existingAuthUser = await findAuthUserByEmail(serviceClient, resolvedEmail);
     if (!existingAuthUser?.id) {
-      return res.status(404).json({ error: 'No active staff account found for that login.' });
+      return res.status(404).json({ error: 'No active staff account found for that email.' });
     }
 
     const code = createSixDigitCode();
@@ -517,15 +520,18 @@ router.post('/verify-reset-code', async (req, res) => {
     const code = normalizeString(req.body?.code);
 
     if (!login || !code) {
-      return res.status(400).json({ error: 'login and code are required.' });
+      return res.status(400).json({ error: 'email and code are required.' });
+    }
+    if (!EMAIL_PATTERN.test(login)) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
     }
     if (!/^\d{6}$/.test(code)) {
       return res.status(400).json({ error: 'Verification code must be exactly 6 digits.' });
     }
 
-    const resolvedEmail = login.includes('@') ? login.toLowerCase() : await resolveLoginEmail(login);
+    const resolvedEmail = login.toLowerCase();
     if (!resolvedEmail) {
-      return res.status(404).json({ error: 'No active staff account found for that login.' });
+      return res.status(404).json({ error: 'No active staff account found for that email.' });
     }
 
     const storedVerification = await getVerificationRecord({
@@ -667,7 +673,10 @@ router.post('/complete-forgot-password', async (req, res) => {
     const newPassword = normalizeString(req.body?.newPassword);
 
     if (!login || !code || !newPassword) {
-      return res.status(400).json({ error: 'login, code, and newPassword are required.' });
+      return res.status(400).json({ error: 'email, code, and newPassword are required.' });
+    }
+    if (!EMAIL_PATTERN.test(login)) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
     }
     if (!/^\d{6}$/.test(code)) {
       return res.status(400).json({ error: 'Verification code must be exactly 6 digits.' });
@@ -676,9 +685,9 @@ router.post('/complete-forgot-password', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     }
 
-    const resolvedEmail = login.includes('@') ? login.toLowerCase() : await resolveLoginEmail(login);
+    const resolvedEmail = login.toLowerCase();
     if (!resolvedEmail) {
-      return res.status(404).json({ error: 'No active staff account found for that login.' });
+      return res.status(404).json({ error: 'No active staff account found for that email.' });
     }
 
     const storedVerification = await getVerificationRecord({

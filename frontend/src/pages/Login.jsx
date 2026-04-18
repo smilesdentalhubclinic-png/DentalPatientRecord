@@ -515,18 +515,18 @@ function Login({
           <div className="forgot-card">
             <h3 id="forgot-password-title">Password Assistance</h3>
             <p>
-              {forgotStep === 'request' ? 'Enter your username or email. We will send a verification code to your registered email.' : null}
+              {forgotStep === 'request' ? 'Enter your email. We will send a verification code to your registered email.' : null}
               {forgotStep === 'verify' ? 'Enter the verification code sent to your email.' : null}
               {forgotStep === 'reset' ? 'Code verified. Create your new password.' : null}
             </p>
             {forgotStep !== 'done' ? (
               <form onSubmit={forgotStep === 'request' ? onForgotSubmit : forgotStep === 'verify' ? onForgotVerifyCode : onForgotResetPassword}>
                 <input
-                  type="text"
-                  placeholder="Username or email"
+                  type="email"
+                  placeholder="Email"
                   value={forgotUsername}
                   onChange={onForgotUsernameChange}
-                  autoComplete="username"
+                  autoComplete="email"
                   readOnly={forgotStep !== 'request'}
                 />
                 {forgotStep === 'verify' ? (

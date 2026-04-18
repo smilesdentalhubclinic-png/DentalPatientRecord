@@ -100,6 +100,7 @@ const ACCEPTED_DOCUMENT_MIME_TYPES = new Set([
   'text/plain',
   'text/csv',
 ])
+const OTHER_LEGEND_OPTION_VALUE = '__other_legend__'
 
 const DENTAL_CHART_IMAGES = [
   { src: dentalChart1, alt: 'Dental chart 1' },
@@ -151,6 +152,7 @@ const initialServiceLine = () => ({
   quantity: 1,
   unitPrice: '',
 })
+const OTHER_SERVICE_OPTION_VALUE = '__other_service__'
 const initialServiceForm = () => ({
   date: todayIsoDate(),
   originalDate: '',
@@ -158,6 +160,8 @@ const initialServiceForm = () => ({
   discountType: 'peso',
   discountValue: '',
 })
+const sanitizeServiceNameInput = (value) => `${value ?? ''}`.replace(/[^a-zA-Z\s&'-]/g, '')
+const sanitizeLegendCodeInput = (value) => `${value ?? ''}`.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6)
 const createServiceFormFromRow = (row, serviceOptions = []) => {
   if (!row?.lines?.length) return initialServiceForm()
   const totalDiscount = roundMoney(row.lines.reduce((sum, line) => sum + Number(line.discountAmount ?? 0), 0))
@@ -607,6 +611,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const [pendingServiceLineRemovalIndex, setPendingServiceLineRemovalIndex] = useState(null)
   const [pendingDocumentDeletion, setPendingDocumentDeletion] = useState(null)
   const [pendingDentalSave, setPendingDentalSave] = useSessionStorageState(`${patientRecordUiStoragePrefix}pendingDentalSave`, null)
+  const [customServiceLineIndex, setCustomServiceLineIndex] = useState(null)
+  const [customServiceName, setCustomServiceName] = useState('')
+  const [customServicePrice, setCustomServicePrice] = useState('')
+  const [customServiceError, setCustomServiceError] = useState('')
+  const [customLegendTooth, setCustomLegendTooth] = useState('')
+  const [customLegendCode, setCustomLegendCode] = useState('')
+  const [customLegendName, setCustomLegendName] = useState('')
+  const [customLegendError, setCustomLegendError] = useState('')
   const [dentalRecordHistory, setDentalRecordHistory] = useState([])
   const [selectedDentalRecordId, setSelectedDentalRecordId] = useState('')
   const [dentalRecord, setDentalRecord] = useState(() => cloneDentalRecord(DEFAULT_DENTAL_RECORD))
@@ -632,6 +644,20 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     ].filter(Boolean)
     return [...new Set([defaultLegendCode, ...liveCodes, ...persistedCodes].filter(Boolean))]
   }, [defaultLegendCode, dentalRecord, dentalRecordForm, legendOptions])
+  const legendOptionEntries = useMemo(() => {
+    const byCode = new Map(
+      legendOptions.map((legend) => {
+        const readableName = `${legend.condition_name ?? legend.description ?? legend.code ?? ''}`.trim()
+        const description = `${legend.description ?? ''}`.trim()
+        const label = description && description.toLowerCase() !== readableName.toLowerCase()
+          ? `${legend.code} - ${readableName} (${description})`
+          : `${legend.code} - ${readableName || legend.code}`
+        return [legend.code, { value: legend.code, label }]
+      }),
+    )
+
+    return legendCodes.map((code) => byCode.get(code) ?? { value: code, label: code })
+  }, [legendCodes, legendOptions])
   const selectedDentalRecordEntry = useMemo(() => {
     if (!dentalRecordHistory.length) return null
     return dentalRecordHistory.find((entry) => entry.id === selectedDentalRecordId) ?? dentalRecordHistory[0]
@@ -863,7 +889,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const loadLegendOptions = useCallback(async () => {
     let { data, error: fetchError } = await supabase
       .from('tooth_conditions')
-      .select('id, code, condition_name')
+      .select('id, code, condition_name, description')
       .eq('is_active', true)
       .order('code', { ascending: true })
 
@@ -882,6 +908,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     setLegendOptions((data ?? []).map((row) => ({
       ...row,
       condition_name: row.condition_name ?? row.code,
+      description: row.description ?? row.condition_name ?? row.code,
     })))
   }, [])
 
@@ -1143,13 +1170,104 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     setLastExamInput(formatDateInputDisplay(dentalHistory.lastExam))
   }, [dentalHistory.lastExam])
 
+  const closeCustomLegendModal = () => {
+    setCustomLegendTooth('')
+    setCustomLegendCode('')
+    setCustomLegendName('')
+    setCustomLegendError('')
+  }
+
+  const openCustomLegendModal = (toothKey) => {
+    setCustomLegendTooth(toothKey)
+    setCustomLegendCode('')
+    setCustomLegendName('')
+    setCustomLegendError('')
+  }
+
+  const saveCustomLegend = async () => {
+    if (!customLegendTooth) return
+
+    const nextCode = sanitizeLegendCodeInput(customLegendCode)
+    const nextName = toTitleCase(`${customLegendName ?? ''}`.trim())
+
+    if (!nextCode || !nextName) {
+      setCustomLegendError('Enter a legend code and legend name.')
+      return
+    }
+
+    const duplicateLegend = legendOptions.find((legend) => (
+      `${legend.code ?? ''}`.trim().toUpperCase() === nextCode
+        || `${legend.condition_name ?? ''}`.trim().toLowerCase() === nextName.toLowerCase()
+    ))
+
+    if (duplicateLegend) {
+      setDentalRecordForm((previous) => ({
+        ...previous,
+        toothMap: { ...previous.toothMap, [customLegendTooth]: duplicateLegend.code },
+      }))
+      closeCustomLegendModal()
+      return
+    }
+
+    setIsSaving(true)
+    setCustomLegendError('')
+
+    try {
+      const { data: insertedLegend, error: insertError } = await supabase
+        .from('tooth_conditions')
+        .insert({
+          code: nextCode,
+          condition_name: nextName,
+          description: nextName,
+        })
+        .select('id, code, condition_name, description')
+        .single()
+
+      if (insertError) throw insertError
+
+      const normalizedLegend = {
+        ...insertedLegend,
+        condition_name: insertedLegend.condition_name ?? insertedLegend.code,
+        description: insertedLegend.description ?? insertedLegend.condition_name ?? insertedLegend.code,
+      }
+
+      setLegendOptions((previous) => (
+        [...previous, normalizedLegend].sort((left, right) => (
+          `${left.code ?? ''}`.localeCompare(`${right.code ?? ''}`)
+        ))
+      ))
+      setDentalRecordForm((previous) => ({
+        ...previous,
+        toothMap: { ...previous.toothMap, [customLegendTooth]: normalizedLegend.code },
+      }))
+      closeCustomLegendModal()
+    } catch (saveError) {
+      setCustomLegendError(normalizeError(saveError, 'Unable to add the legend right now.'))
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   const renderToothRow = (toothNumbers, keyPrefix, rowType, positions, toothValues, onToothChange, disabled = false) => (
     <div className={`pr-drop-row ${rowType === 'top' ? 'pr-drop-row-top' : 'pr-drop-row-bottom'}`}>
       {toothNumbers.map((tooth, index) => ({ tooth, left: positions[index] })).map(({ tooth, left }) => (
         <div key={`${keyPrefix}-${tooth}`} className="pr-drop-slot" style={{ left: `${left}%` }}>
           <div className={`pr-drop-select-wrap ${disabled ? 'is-disabled' : ''}`}>
-            <select value={toothValues[`${rowType}-${tooth}`]} disabled={disabled} onChange={(event) => onToothChange(`${rowType}-${tooth}`, event.target.value)}>
-              {legendCodes.map((option) => <option key={option} value={option}>{option}</option>)}
+            <select
+              value={toothValues[`${rowType}-${tooth}`]}
+              disabled={disabled}
+              title={legendOptionEntries.find((option) => option.value === toothValues[`${rowType}-${tooth}`])?.label || toothValues[`${rowType}-${tooth}`]}
+              onChange={(event) => {
+                const nextValue = event.target.value
+                if (!disabled && nextValue === OTHER_LEGEND_OPTION_VALUE) {
+                  openCustomLegendModal(`${rowType}-${tooth}`)
+                  return
+                }
+                onToothChange(`${rowType}-${tooth}`, nextValue)
+              }}
+            >
+              {legendOptionEntries.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              {!disabled ? <option value={OTHER_LEGEND_OPTION_VALUE}>Other legend...</option> : null}
             </select>
             <span className="pr-drop-value">{toothValues[`${rowType}-${tooth}`]}</span>
           </div>
@@ -1268,6 +1386,21 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     setServiceForm((previous) => ({ ...previous, ...patch }))
   }
 
+  const closeCustomServiceModal = () => {
+    setCustomServiceLineIndex(null)
+    setCustomServiceName('')
+    setCustomServicePrice('')
+    setCustomServiceError('')
+  }
+
+  const openCustomServiceModal = (lineIndex) => {
+    if (!canManageServiceDetails) return
+    setCustomServiceLineIndex(lineIndex)
+    setCustomServiceName('')
+    setCustomServicePrice('')
+    setCustomServiceError('')
+  }
+
   const updateServiceLine = (index, patch) => {
     if (!canManageServiceDetails) return
     if (serviceFormError) setServiceFormError('')
@@ -1298,6 +1431,69 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       ...previous,
       lines: [...previous.lines, initialServiceLine()],
     }))
+  }
+
+  const saveCustomService = async () => {
+    if (!canManageServiceDetails || customServiceLineIndex === null) return
+
+    const nextName = toTitleCase(sanitizeServiceNameInput(customServiceName).trim())
+    const nextPrice = toMoney(customServicePrice)
+
+    if (!nextName || nextPrice === null) {
+      setCustomServiceError('Enter a valid service name and non-negative price.')
+      return
+    }
+
+    const duplicateService = serviceOptions.find((service) => (
+      `${service.service_name ?? ''}`.trim().toLowerCase() === nextName.toLowerCase()
+    ))
+
+    if (duplicateService) {
+      updateServiceLine(customServiceLineIndex, {
+        serviceId: duplicateService.id,
+        unitPrice: duplicateService.price,
+      })
+      closeCustomServiceModal()
+      return
+    }
+
+    setIsSaving(true)
+    setCustomServiceError('')
+
+    try {
+      const { data: insertedService, error: insertError } = await supabase
+        .from('services')
+        .insert({
+          service_name: nextName,
+          price: nextPrice,
+          description: nextName,
+        })
+        .select('id, service_name, price')
+        .single()
+
+      if (insertError) throw insertError
+
+      const normalizedInsertedService = {
+        ...insertedService,
+        price: Number(insertedService.price ?? 0),
+      }
+
+      setServiceOptions((previous) => (
+        [...previous, normalizedInsertedService].sort((left, right) => (
+          `${left.service_name ?? ''}`.localeCompare(`${right.service_name ?? ''}`)
+        ))
+      ))
+
+      updateServiceLine(customServiceLineIndex, {
+        serviceId: normalizedInsertedService.id,
+        unitPrice: normalizedInsertedService.price,
+      })
+      closeCustomServiceModal()
+    } catch (saveError) {
+      setCustomServiceError(normalizeError(saveError, 'Unable to add the service right now.'))
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const removeServiceLine = (index) => {
@@ -2797,9 +2993,21 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   return (
                     <div key={`service-line-${index}`} className="service-ledger-row">
                       <div className="service-ledger-service-cell">
-                        <select value={line.serviceId} onChange={(event) => updateServiceLine(index, { serviceId: event.target.value })} disabled={isReceptionist}>
+                        <select
+                          value={line.serviceId}
+                          onChange={(event) => {
+                            const nextValue = event.target.value
+                            if (nextValue === OTHER_SERVICE_OPTION_VALUE) {
+                              openCustomServiceModal(index)
+                              return
+                            }
+                            updateServiceLine(index, { serviceId: nextValue })
+                          }}
+                          disabled={isReceptionist}
+                        >
                           <option value="">Select service</option>
                           {serviceOptions.map((service) => <option key={service.id} value={service.id}>{service.service_name}</option>)}
+                          {!isReceptionist ? <option value={OTHER_SERVICE_OPTION_VALUE}>Other service...</option> : null}
                         </select>
                       </div>
                       <div className="service-ledger-qty">
@@ -2870,6 +3078,77 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               <div className="modal-actions">
                 <button type="button" className="danger-btn" onClick={cancelServiceSaveConfirm}>Cancel</button>
                 <button type="button" className="success-btn" onClick={() => { void confirmServiceSave() }}>Yes</button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {customServiceLineIndex !== null ? (
+        <>
+          <div className="service-confirm-backdrop" onClick={closeCustomServiceModal} />
+          <div className="pr-modal service-confirm-modal other-service-modal">
+            <div className="pr-modal-head"><h2>Add Other Service</h2><button type="button" onClick={closeCustomServiceModal}>X</button></div>
+            <div className="pr-modal-body other-service-modal-body">
+              <ErrorModal message={customServiceError} onClose={() => setCustomServiceError('')} />
+              <div className="other-service-form">
+                <label className="other-service-field">
+                  <span>Service Name</span>
+                  <input
+                    type="text"
+                    value={customServiceName}
+                    onChange={(event) => setCustomServiceName(toTitleCase(sanitizeServiceNameInput(event.target.value)))}
+                  />
+                </label>
+                <label className="other-service-field">
+                  <span>Service Price</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    value={customServicePrice}
+                    onChange={(event) => setCustomServicePrice(event.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="danger-btn" onClick={closeCustomServiceModal}>Cancel</button>
+                <button type="button" className="success-btn" onClick={() => { void saveCustomService() }} disabled={isSaving}>Add Service</button>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {customLegendTooth ? (
+        <>
+          <div className="service-confirm-backdrop" onClick={closeCustomLegendModal} />
+          <div className="pr-modal service-confirm-modal other-legend-modal">
+            <div className="pr-modal-head"><h2>Add Other Legend</h2><button type="button" onClick={closeCustomLegendModal}>X</button></div>
+            <div className="pr-modal-body other-legend-modal-body">
+              <ErrorModal message={customLegendError} onClose={() => setCustomLegendError('')} />
+              <div className="other-legend-form">
+                <label className="other-legend-field other-legend-code-field">
+                  <span>Legend Code</span>
+                  <input
+                    type="text"
+                    value={customLegendCode}
+                    onChange={(event) => setCustomLegendCode(sanitizeLegendCodeInput(event.target.value))}
+                  />
+                </label>
+                <label className="other-legend-field">
+                  <span>Legend Name</span>
+                  <input
+                    type="text"
+                    value={customLegendName}
+                    onChange={(event) => setCustomLegendName(toTitleCase(event.target.value))}
+                  />
+                </label>
+              </div>
+              <div className="modal-actions">
+                <button type="button" className="danger-btn" onClick={closeCustomLegendModal}>Cancel</button>
+                <button type="button" className="success-btn" onClick={() => { void saveCustomLegend() }} disabled={isSaving}>Add Legend</button>
               </div>
             </div>
           </div>

@@ -847,9 +847,15 @@ function AppRoutes() {
   }
 
   const requestForgotCode = async ({ showResendMessage = false } = {}) => {
-    const username = forgotUsername.trim()
-    if (!username) {
-      setForgotError('Please enter your username.')
+    const email = forgotUsername.trim().toLowerCase()
+    if (!email) {
+      setForgotError('Please enter your email.')
+      setForgotSuccess('')
+      return false
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setForgotError('Please enter a valid email address.')
       setForgotSuccess('')
       return false
     }
@@ -869,7 +875,7 @@ function AppRoutes() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          login: username,
+          login: email,
         }),
       })
       if (!response.ok) {
@@ -882,13 +888,13 @@ function AppRoutes() {
         return false
       }
 
-      setForgotUsername(payload?.email || username)
+      setForgotUsername(payload?.email || email)
       setForgotCode('')
       setForgotStep('verify')
       setForgotSuccess(
         showResendMessage
-          ? `A new verification code was sent to ${payload?.email || username}. Check your email inbox for the latest code.`
-          : `Verification code sent to ${payload?.email || username}. Check your email inbox for the latest code.`,
+          ? `A new verification code was sent to ${payload?.email || email}. Check your email inbox for the latest code.`
+          : `Verification code sent to ${payload?.email || email}. Check your email inbox for the latest code.`,
       )
       if (showResendMessage) {
         setIsResendingForgotCode(false)
@@ -923,11 +929,15 @@ function AppRoutes() {
   const handleForgotVerifyCode = async (event) => {
     event.preventDefault()
 
-    const username = forgotUsername.trim()
+    const email = forgotUsername.trim().toLowerCase()
     const code = forgotCode.trim()
 
-    if (!username || !code) {
-      setForgotError('Enter your username/email and verification code.')
+    if (!email || !code) {
+      setForgotError('Enter your email and verification code.')
+      return
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setForgotError('Please enter a valid email address.')
       return
     }
     if (!/^\d{6}$/.test(code)) {
@@ -946,7 +956,7 @@ function AppRoutes() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          login: username,
+          login: email,
           code,
         }),
       })
