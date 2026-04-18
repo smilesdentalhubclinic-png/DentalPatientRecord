@@ -343,6 +343,7 @@ async function requireAdminRequester(accessToken) {
   }
 
   return {
+    requesterClient,
     serviceClient,
     requesterUserId: requesterUserData.user.id,
   };
@@ -1155,7 +1156,7 @@ router.post('/import-patient-records', async (req, res) => {
     return res.status(adminContext.errorResponse.status).json(adminContext.errorResponse.payload);
   }
 
-  const { serviceClient, requesterUserId } = adminContext;
+  const { requesterClient, serviceClient, requesterUserId } = adminContext;
   const csvContent = typeof req.body?.csvContent === 'string' ? req.body.csvContent : '';
   const fileName = normalizeString(req.body?.fileName) || 'patient-records-migrate-template.csv';
 
@@ -1203,7 +1204,7 @@ router.post('/import-patient-records', async (req, res) => {
         continue;
       }
 
-      const resolvedPatient = await resolvePatientForRecordImport(serviceClient, patientCache, patientIdentifier);
+      const resolvedPatient = await resolvePatientForRecordImport(requesterClient, patientCache, patientIdentifier);
 
       const expectedLastName = extractPatientLastName(row);
       const expectedFirstName = extractPatientFirstName(row);
@@ -1245,7 +1246,7 @@ router.post('/import-patient-records', async (req, res) => {
           }
 
           const resolvedService = await resolveServiceForImport(
-            serviceClient,
+            requesterClient,
             serviceCache,
             serviceEntry.lookupValue,
             validationLookups,
@@ -1286,7 +1287,7 @@ router.post('/import-patient-records', async (req, res) => {
       }
 
       if (dentalPayload) {
-        const dentalMode = await upsertDentalRecord(serviceClient, dentalPayload, requesterUserId);
+        const dentalMode = await upsertDentalRecord(requesterClient, dentalPayload, requesterUserId);
         if (dentalMode === 'created') {
           summary.dentalRecordsCreated += 1;
         } else {
@@ -1295,7 +1296,7 @@ router.post('/import-patient-records', async (req, res) => {
       }
 
       for (const servicePayload of servicePayloads) {
-        const serviceMode = await upsertServiceRecord(serviceClient, servicePayload, requesterUserId);
+        const serviceMode = await upsertServiceRecord(requesterClient, servicePayload, requesterUserId);
         if (serviceMode === 'created') {
           summary.serviceRecordsCreated += 1;
         } else {
