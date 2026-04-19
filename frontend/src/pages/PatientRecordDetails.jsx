@@ -184,6 +184,7 @@ const DEFAULT_DENTAL_RECORD = {
   toothMap: createToothMap(),
   periodontal: createBooleanMap(PERIODONTAL),
   occlusion: createBooleanMap(OCCLUSION),
+  dentistName: '',
   prescriptions: '',
   notes: '',
 }
@@ -192,6 +193,7 @@ const cloneDentalRecord = (record) => ({
   toothMap: { ...record.toothMap },
   periodontal: { ...record.periodontal },
   occlusion: { ...record.occlusion },
+  dentistName: record.dentistName,
   prescriptions: record.prescriptions,
   notes: record.notes,
 })
@@ -297,7 +299,7 @@ const normalizeDateInputTyping = (value) => {
   return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`
 }
 
-const formatDateTimeLong = (value) => {
+const formatDateTimeLong = (value, options = {}) => {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
@@ -425,6 +427,7 @@ const normalizeDentalRecord = (raw) => ({
   toothMap: { ...createToothMap(), ...(raw?.toothMap ?? {}) },
   periodontal: Object.fromEntries(PERIODONTAL.map((item) => [item, Boolean(raw?.periodontal?.[item])])),
   occlusion: Object.fromEntries(OCCLUSION.map((item) => [item, Boolean(raw?.occlusion?.[item])])),
+  dentistName: raw?.dentist ?? raw?.dentistName ?? '',
   prescriptions: raw?.prescriptions ?? '',
   notes: raw?.notes ?? '',
 })
@@ -964,7 +967,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const loadServiceRows = useCallback(async () => {
     const { data, error: fetchError } = await supabase
       .from('service_records')
-      .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, created_at, updated_at, updated_by, services(service_name, price)')
+      .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, created_at, updated_at, updated_by, performed_by, services(service_name, price)')
       .eq('patient_id', id)
       .is('archived_at', null)
       .order('visit_at', { ascending: false })
@@ -973,7 +976,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       if (fetchError?.code === '42703') {
         const fallbackResult = await supabase
           .from('service_records')
-          .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, created_at, updated_by, services(service_name, price)')
+          .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, created_at, updated_by, performed_by, services(service_name, price)')
           .eq('patient_id', id)
           .is('archived_at', null)
           .order('visit_at', { ascending: false })
@@ -983,17 +986,51 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
         throw fetchError
       }
 
-    const staffMap = await fetchStaffNames(rows.map((row) => row.updated_by))
+    const { data: dentalRows, error: dentalFetchError } = await supabase
+      .from('dental_records')
+      .select('recorded_at, updated_by, chart_data')
+      .eq('patient_id', id)
+      .is('archived_at', null)
+      .order('recorded_at', { ascending: false })
+
+    if (dentalFetchError) {
+      throw dentalFetchError
+    }
+
+    const staffMap = await fetchStaffNames([
+      ...rows.flatMap((row) => [row.updated_by, row.performed_by]),
+      ...(dentalRows ?? []).flatMap((row) => [row.updated_by, row.chart_data?.dentist_user_id]),
+    ])
+    const dentistByDate = new Map()
+
+    ;(dentalRows ?? []).forEach((row) => {
+      const recordedDate = toLocalIsoDate(row.recorded_at)
+      if (!recordedDate || dentistByDate.has(recordedDate)) return
+
+      const resolvedDentistName = staffMap[row.chart_data?.dentist_user_id]
+        || `${row.chart_data?.dentist ?? ''}`.trim()
+        || staffMap[row.updated_by]
+        || ''
+
+      if (resolvedDentistName) {
+        dentistByDate.set(recordedDate, resolvedDentistName)
+      }
+    })
+
     const groupedByDate = new Map()
 
     rows.forEach((row) => {
-      const visitDate = row.visit_at ? row.visit_at.slice(0, 10) : '-'
+      const visitDate = row.visit_at ? toLocalIsoDate(row.visit_at) : '-'
       const quantity = Number(row.quantity ?? 1) >= 1 ? Number(row.quantity ?? 1) : 1
       const unitPrice = Number(row.unit_price ?? row.services?.price ?? row.amount ?? 0)
       const lineAmount = roundMoney(quantity * unitPrice)
       const discountAmount = Math.max(0, Math.min(Number(row.discount_amount ?? 0), lineAmount))
       const totalAmount = Math.max(0, Number(row.amount ?? lineAmount - discountAmount))
       let discountType = 'peso'
+      const resolvedPerformedByName = dentistByDate.get(visitDate)
+        || staffMap[row.performed_by]
+        || staffMap[row.updated_by]
+        || MISSING_AUDIT_USER_LABEL
 
       if (typeof row.notes === 'string' && row.notes.trim() !== '') {
         try {
@@ -1013,6 +1050,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
           total: 0,
           lines: [],
           by: staffMap[row.updated_by] || MISSING_AUDIT_USER_LABEL,
+          performedByName: resolvedPerformedByName,
           updatedAt: row.updated_at || row.created_at || row.visit_at || null,
         })
       }
@@ -1036,6 +1074,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
         bucket.updatedAt = rowUpdatedAt
         bucket.by = staffMap[row.updated_by] || MISSING_AUDIT_USER_LABEL
       }
+
+      if (!bucket.performedByName || bucket.performedByName === MISSING_AUDIT_USER_LABEL) {
+        bucket.performedByName = resolvedPerformedByName
+      }
     })
 
     setServiceRows(
@@ -1048,7 +1090,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const loadDentalRecord = useCallback(async () => {
     const { data, error: fetchError } = await supabase
       .from('dental_records')
-      .select('id, findings, treatment, chart_data, recorded_at, updated_by')
+      .select('id, findings, treatment, chart_data, recorded_at, created_at, updated_at, updated_by')
       .eq('patient_id', id)
       .is('archived_at', null)
       .order('recorded_at', { ascending: false })
@@ -1057,7 +1099,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     if (fetchError?.code === '42703') {
       const fallbackResult = await supabase
         .from('dental_records')
-        .select('id, findings, treatment, chart_data, recorded_at, updated_by')
+        .select('id, findings, treatment, chart_data, recorded_at, created_at, updated_at, updated_by')
         .eq('patient_id', id)
         .is('archived_at', null)
         .order('recorded_at', { ascending: false })
@@ -1075,7 +1117,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       return
     }
 
-    const staffMap = await fetchStaffNames(rows.map((row) => row.updated_by))
+    const staffMap = await fetchStaffNames(rows.flatMap((row) => [row.updated_by, row.chart_data?.dentist_user_id]))
     const latestByDate = new Map()
 
     rows.forEach((row) => {
@@ -1085,9 +1127,11 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       latestByDate.set(dateKey, {
         id: row.id,
         recordedAt: row.recorded_at,
+        updatedAt: row.updated_at || row.created_at || row.recorded_at,
         updatedByName: staffMap[row.updated_by] || MISSING_AUDIT_USER_LABEL,
         record: normalizeDentalRecord({
           ...(row.chart_data ?? {}),
+          dentist: staffMap[row.chart_data?.dentist_user_id] || row.chart_data?.dentist || '',
           notes: row.findings ?? row.chart_data?.notes ?? '',
           prescriptions: row.treatment ?? row.chart_data?.prescriptions ?? '',
         }),
@@ -1158,7 +1202,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     setDentalRecord(cloneDentalRecord(selectedDentalRecordEntry.record))
     setDentalRecordForm(cloneDentalRecord(selectedDentalRecordEntry.record))
     setDentalRecordMeta({
-      updatedAt: selectedDentalRecordEntry.recordedAt,
+      updatedAt: selectedDentalRecordEntry.updatedAt,
       updatedByName: selectedDentalRecordEntry.updatedByName,
     })
   }, [selectedDentalRecordEntry])
@@ -2434,7 +2478,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   <div class="grid">
     <div class="field"><strong>Periodontal:</strong> ${escapeHtml(periodontalChecked)}</div>
     <div class="field"><strong>Occlusion:</strong> ${escapeHtml(occlusionChecked)}</div>
-    <div class="field"><strong>Dentist:</strong> ${escapeHtml(dentalRecordMeta.updatedByName || '-')}</div>
+    <div class="field"><strong>Dentist:</strong> ${escapeHtml(dentalRecord.dentistName || dentalRecordMeta.updatedByName || '-')}</div>
     <div class="field"><strong>Prescriptions:</strong> ${escapeHtml(dentalRecord.prescriptions || '-')}</div>
     <div class="field"><strong>Notes:</strong> ${escapeHtml(dentalRecord.notes || '-')}</div>
     <div class="field"><strong>Last Updated:</strong> ${escapeHtml(formatDateTimeLong(dentalRecordMeta.updatedAt))}</div>
@@ -2768,7 +2812,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               <article className="pr-screen-card"><h4>Periodontal Screening</h4><div className="pr-option-grid">{PERIODONTAL.map((item) => <label key={item}><input type="checkbox" checked={dentalRecord.periodontal[item]} readOnly />{item}</label>)}</div></article>
               <article className="pr-screen-card"><h4>Occlusion</h4><div className="pr-option-grid">{OCCLUSION.map((item) => <label key={item}><input type="checkbox" checked={dentalRecord.occlusion[item]} readOnly />{item}</label>)}</div></article>
             </div>
-            <div className="pr-dentist-tag"><strong>Dentist:</strong> <span className="pr-dentist-name">{dentalRecordMeta.updatedByName}</span></div>
+            <div className="pr-dentist-tag"><strong>Dentist:</strong> <span className="pr-dentist-name">{dentalRecord.dentistName || dentalRecordMeta.updatedByName}</span></div>
             <section className="pr-dental-history-wrap">
               <h3>Dental History</h3>
               <div className="pr-dental-chart">{renderDentalSection(DENTAL_CHART_IMAGES[0], TOOTH_NUMBERS_BY_CHART.chart1, 'chart-1', TOOTH_X_POSITIONS_BY_CHART.chart1, dentalRecord.toothMap, () => {}, true)}<div className="pr-dental-divider" />{renderDentalSection(DENTAL_CHART_IMAGES[1], TOOTH_NUMBERS_BY_CHART.chart2, 'chart-2', TOOTH_X_POSITIONS_BY_CHART.chart2, dentalRecord.toothMap, () => {}, true)}</div>
@@ -2964,6 +3008,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               ))}
             </div>
             <p className="service-last-change">Subtotal: <strong>&#8369; {formatCurrency(selectedService.total)}</strong></p>
+            <p className="service-last-change">Performed by: {selectedService.performedByName || selectedService.by}</p>
             <p className="service-last-change">Last Changes by: {selectedService.by}</p>
             <div className="modal-actions center"><button type="button" className="view" onClick={close}>Done</button></div>
           </div>

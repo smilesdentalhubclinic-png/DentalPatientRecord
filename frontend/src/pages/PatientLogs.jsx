@@ -34,6 +34,22 @@ const formatDateTime = (value, details) => {
   return `${dateLabel} ${timeLabel}`
 }
 
+const formatManilaIsoDate = (value) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date)
+  const year = parts.find((part) => part.type === 'year')?.value ?? ''
+  const month = parts.find((part) => part.type === 'month')?.value ?? ''
+  const day = parts.find((part) => part.type === 'day')?.value ?? ''
+  return year && month && day ? `${year}-${month}-${day}` : ''
+}
+
 const toLocalIsoDate = (value) => {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
@@ -52,6 +68,86 @@ const formatPatientCode = (patientCode, patientId) => {
 
   const fallbackDigits = `${patientId || ''}`.replace(/\D/g, '').slice(-6)
   return `PT-${fallbackDigits.padStart(6, '0')}`
+}
+
+const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(`${value ?? ''}`.trim())
+
+const getLatestEntryMap = (rows, dateField) => rows.reduce((map, row) => {
+  const dayKey = formatManilaIsoDate(row?.[dateField])
+  if (!row?.patient_id || !dayKey) return map
+
+  const compositeKey = `${row.patient_id}|${dayKey}`
+  const currentTime = new Date(row?.[dateField] || 0).getTime()
+  const existing = map.get(compositeKey)
+  const existingTime = new Date(existing?.[dateField] || 0).getTime()
+
+  if (!existing || currentTime > existingTime) {
+    map.set(compositeKey, row)
+  }
+
+  return map
+}, new Map())
+
+const resolveAssignedDentists = async (logRows) => {
+  const patientIds = [...new Set((logRows ?? []).map((row) => row.patient_id).filter(Boolean))]
+  if (patientIds.length === 0) return logRows ?? []
+
+  const [{ data: dentalRows, error: dentalError }, { data: serviceRows, error: serviceError }] = await Promise.all([
+    supabase
+      .from('dental_records')
+      .select('patient_id, recorded_at, chart_data, updated_by, created_by')
+      .in('patient_id', patientIds)
+      .is('archived_at', null),
+    supabase
+      .from('service_records')
+      .select('patient_id, visit_at, performed_by')
+      .in('patient_id', patientIds)
+      .is('archived_at', null),
+  ])
+
+  if (dentalError) throw dentalError
+  if (serviceError) throw serviceError
+
+  const dentalByPatientDay = getLatestEntryMap(dentalRows ?? [], 'recorded_at')
+  const serviceByPatientDay = getLatestEntryMap(serviceRows ?? [], 'visit_at')
+
+  const staffIds = [...new Set(
+    [
+      ...(dentalRows ?? []).flatMap((row) => [
+        row?.chart_data?.dentist_user_id,
+        row?.updated_by,
+        row?.created_by,
+      ]),
+      ...(serviceRows ?? []).map((row) => row?.performed_by),
+    ].filter((value) => isUuid(value)),
+  )]
+
+  let staffNames = {}
+  if (staffIds.length > 0) {
+    const { data: staffRows, error: staffError } = await supabase.rpc('lookup_staff_names', { p_user_ids: staffIds })
+    if (staffError) throw staffError
+    staffNames = Object.fromEntries((staffRows ?? []).map((row) => [row.user_id, row.full_name]))
+  }
+
+  return (logRows ?? []).map((row) => {
+    const dayKey = formatManilaIsoDate(row.logged_at)
+    const compositeKey = `${row.patient_id}|${dayKey}`
+    const dentalRow = dentalByPatientDay.get(compositeKey)
+    const serviceRow = serviceByPatientDay.get(compositeKey)
+    const dentistUserId = dentalRow?.chart_data?.dentist_user_id
+    const dentistName = `${dentalRow?.chart_data?.dentist ?? ''}`.trim()
+    const auditUserId = dentalRow?.updated_by || dentalRow?.created_by || ''
+    const performerUserId = serviceRow?.performed_by || ''
+
+    return {
+      ...row,
+      actor_name: staffNames[dentistUserId]
+        || dentistName
+        || staffNames[performerUserId]
+        || staffNames[auditUserId]
+        || row.actor_name,
+    }
+  })
 }
 
 function PatientLogs() {
@@ -79,8 +175,15 @@ function PatientLogs() {
       return
     }
 
-    setLogs(data ?? [])
-    setLoading(false)
+    try {
+      const resolvedLogs = await resolveAssignedDentists(data ?? [])
+      setLogs(resolvedLogs)
+      setLoading(false)
+    } catch (resolveError) {
+      setLogs(data ?? [])
+      setError(resolveError.message || 'Unable to resolve assigned dentist names.')
+      setLoading(false)
+    }
   }
 
   useEffect(() => {

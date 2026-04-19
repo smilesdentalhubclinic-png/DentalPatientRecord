@@ -280,20 +280,31 @@ body {
 }
 
 .password-field {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 10px;
+  position: relative;
+  width: 100%;
+}
+
+.password-field input {
+  width: 100%;
+  padding-right: 3rem;
 }
 
 .eye-toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
   background: transparent;
   border: none;
-  padding: 4px;
+  padding: 0;
   display: grid;
   place-items: center;
   cursor: pointer;
   color: #9aa6af;
+}
+
+.eye-toggle:hover {
+  color: #0b7aa6;
 }
 
 .eye-icon {
@@ -4569,6 +4580,14 @@ body {
 
 .weekly-bar.female {
   background: #5db6d3;
+}
+
+.weekly-bar.total-services {
+  background: #123f6b;
+}
+
+.legend-item.total-services::before {
+  background: #123f6b;
 }
 
 .weekly-bar-tooltip {

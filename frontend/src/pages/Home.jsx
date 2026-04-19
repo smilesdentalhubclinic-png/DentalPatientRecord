@@ -166,7 +166,7 @@ function Home({ currentProfile }) {
         dateLabel: formatMonthYearLabel(monthStart),
         male,
         female,
-        total: uniquePatients.size,
+        total: monthRows.length,
       }
     })
 
@@ -179,6 +179,8 @@ function Home({ currentProfile }) {
         title: 'Patient Weekly Chart',
         subtitle: 'Latest 7 days',
         xLabel: 'Days',
+        yLabel: 'Number of Patients',
+        legendType: 'sex',
         bars: byDay.map((item, index) => ({ ...item, key: `day-${index}-${item.label}` })),
         maxValue: maxDaily,
       },
@@ -186,6 +188,8 @@ function Home({ currentProfile }) {
         title: 'Patient Monthly Chart',
         subtitle: 'Latest 6 months',
         xLabel: 'Months',
+        yLabel: 'Number of Patients',
+        legendType: 'total',
         bars: byMonth,
         maxValue: maxMonthly,
       },
@@ -235,8 +239,14 @@ function Home({ currentProfile }) {
             </div>
             <p className="muted">{currentChart.subtitle}</p>
             <div className="legend">
-              <span className="legend-item male">Male</span>
-              <span className="legend-item female">Female</span>
+              {currentChart.legendType === 'sex' ? (
+                <>
+                  <span className="legend-item male">Male</span>
+                  <span className="legend-item female">Female</span>
+                </>
+              ) : (
+                <span className="legend-item total-services">Total Patients</span>
+              )}
             </div>
 
             <ErrorModal message={error} onClose={() => setError('')} />
@@ -284,22 +294,36 @@ function Home({ currentProfile }) {
                           tabIndex={0}
                         >
                           <div className="weekly-bar-stack">
-                            <div
-                              className="weekly-bar female"
-                              style={{ height: getBarHeight(item.female) }}
-                              title={`${item.label}: ${item.female} female`}
-                            />
-                            <div
-                              className="weekly-bar male"
-                              style={{ height: getBarHeight(item.male) }}
-                              title={`${item.label}: ${item.male} male`}
-                            />
+                            {currentChart.legendType === 'sex' ? (
+                              <>
+                                <div
+                                  className="weekly-bar female"
+                                  style={{ height: getBarHeight(item.female) }}
+                                  title={`${item.label}: ${item.female} female`}
+                                />
+                                <div
+                                  className="weekly-bar male"
+                                  style={{ height: getBarHeight(item.male) }}
+                                  title={`${item.label}: ${item.male} male`}
+                                />
+                              </>
+                            ) : (
+                              <div
+                                className="weekly-bar total-services"
+                                style={{ height: getBarHeight(item.total) }}
+                                title={`${item.label}: ${item.total} total services`}
+                              />
+                            )}
                           </div>
                           {hoveredDay === item.key ? (
                             <div className="weekly-bar-tooltip">
                               <strong>{item.dateLabel || item.label}</strong>
-                              <span>Female: {item.female}</span>
-                              <span>Male: {item.male}</span>
+                              {currentChart.legendType === 'sex' ? (
+                                <>
+                                  <span>Male: {item.male}</span>
+                                  <span>Female: {item.female}</span>
+                                </>
+                              ) : null}
                               <span>Total: {item.total}</span>
                             </div>
                           ) : null}
@@ -320,7 +344,7 @@ function Home({ currentProfile }) {
               >
                 &rarr;
               </button>
-              <span className="chart-label-y">Number of Patients</span>
+              <span className="chart-label-y">{currentChart.yLabel}</span>
               <span className="chart-label-x">{currentChart.xLabel}</span>
             </div>
           </div>

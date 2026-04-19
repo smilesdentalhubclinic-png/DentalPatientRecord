@@ -66,6 +66,38 @@ function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function normalizeImportHeader(header) {
+  const raw = normalizeString(header).replace(/^\uFEFF/, '');
+  if (!raw) return '';
+
+  const normalized = raw
+    .toLowerCase()
+    .replace(/\r?\n/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+
+  if (!normalized) return '';
+  if (normalized === 'mobile number') return 'phone';
+
+  const medicalQuestionMatch = normalized.match(/^medical question (\d+)( note)?$/);
+  if (medicalQuestionMatch) {
+    return `medical_q${medicalQuestionMatch[1]}${medicalQuestionMatch[2] ? '_note' : ''}`;
+  }
+
+  const dentalQuestionMatch = normalized.match(/^dental question (\d+)( note)?$/);
+  if (dentalQuestionMatch) {
+    return `dental_q${dentalQuestionMatch[1]}${dentalQuestionMatch[2] ? '_note' : ''}`;
+  }
+
+  const serviceFieldMatch = normalized.match(/^service (\d+) (.+)$/);
+  if (serviceFieldMatch) {
+    return `service_${serviceFieldMatch[1]}_${serviceFieldMatch[2].replace(/\s+/g, '_')}`;
+  }
+
+  return normalized.replace(/\s+/g, '_');
+}
+
 function toTitleCase(value) {
   const raw = normalizeString(value);
   if (!raw) return '';
@@ -307,10 +339,12 @@ function parseCsv(content) {
   if (rows.length === 0) return [];
 
   const [headers, ...dataRows] = rows;
+  const normalizedHeaders = headers.map((header) => normalizeImportHeader(header));
   return dataRows.map((row) => {
     const record = {};
-    headers.forEach((header, index) => {
-      record[normalizeString(header)] = row[index] ?? '';
+    normalizedHeaders.forEach((header, index) => {
+      if (!header) return;
+      record[header] = row[index] ?? '';
     });
     return record;
   });
@@ -562,6 +596,9 @@ function hasDentalRecordData(row) {
     'dental_record_tooth_number',
     'dental_record_findings',
     'dental_record_treatment',
+    'dental_record_dentist_staff_id',
+    'dental_record_dentist_first_name',
+    'dental_record_dentist_last_name',
     'dental_record_dentist',
     'dental_record_prescriptions',
     'dental_record_notes',
@@ -721,9 +758,50 @@ function buildToothMap(row) {
   return parseJsonObject(row.dental_record_tooth_map_json, {});
 }
 
-function buildDentalRecordPayload(row, patientId, requesterUserId) {
+function formatStaffImportCode(userId) {
+  const raw = normalizeString(userId);
+  if (!raw) return '';
+  if (/^ST-\d{6}$/i.test(raw)) return raw.toUpperCase();
+
+  const digits = raw.replace(/\D/g, '');
+  if (digits) return `ST-${digits.slice(-6).padStart(6, '0')}`;
+
+  const alphanumerics = raw.replace(/[^a-zA-Z0-9]/g, '');
+  const tail = alphanumerics.slice(-6).toUpperCase();
+  return `ST-${tail.padStart(6, '0')}`;
+}
+
+function extractImportedDentistStaffId(row) {
+  const explicitStaffId = normalizeString(row.dental_record_dentist_staff_id).toUpperCase();
+  if (explicitStaffId) {
+    return explicitStaffId;
+  }
+
+  const legacyDentistField = normalizeString(row.dental_record_dentist).toUpperCase();
+  if (/^ST-[A-Z0-9]{6}$/i.test(legacyDentistField)) {
+    return legacyDentistField;
+  }
+
+  if (/^[0-9A-F]{8}-[0-9A-F]{4}-[1-5][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/i.test(legacyDentistField)) {
+    return legacyDentistField;
+  }
+
+  return '';
+}
+
+function getImportedDentistName(row, resolvedDentistProfile = null) {
+  const firstName = toTitleCase(row.dental_record_dentist_first_name);
+  const lastName = toTitleCase(row.dental_record_dentist_last_name);
+  const fullNameFromParts = normalizeString([firstName, lastName].filter(Boolean).join(' '));
+  const legacyDentistField = normalizeString(row.dental_record_dentist);
+  const fallbackDentistName = extractImportedDentistStaffId(row) ? '' : legacyDentistField;
+
+  return normalizeString(resolvedDentistProfile?.full_name || fullNameFromParts || fallbackDentistName);
+}
+
+function buildDentalRecordPayload(row, patientId, requesterUserId, resolvedDentistProfile = null) {
   const notes = normalizeString(row.dental_record_notes);
-  const dentist = normalizeString(row.dental_record_dentist);
+  const dentist = getImportedDentistName(row, resolvedDentistProfile);
 
   return {
     patient_id: patientId,
@@ -738,13 +816,14 @@ function buildDentalRecordPayload(row, patientId, requesterUserId) {
       prescriptions: normalizeString(row.dental_record_prescriptions),
       notes,
       dentist: dentist || '',
+      dentist_user_id: resolvedDentistProfile?.user_id || null,
     },
     created_by: requesterUserId,
     updated_by: requesterUserId,
   };
 }
 
-function buildServiceRecordPayload(row, patientId, serviceId, requesterUserId) {
+function buildServiceRecordPayload(row, patientId, serviceId, requesterUserId, performedByUserId = null) {
   const quantity = Math.max(1, parseIntegerValue(row.service_record_quantity, 1));
   const unitPrice = parseNumericValue(row.service_record_unit_price, null);
   const discountAmount = Math.max(0, parseNumericValue(row.service_record_discount_amount, 0) ?? 0);
@@ -759,7 +838,7 @@ function buildServiceRecordPayload(row, patientId, serviceId, requesterUserId) {
     quantity,
     unit_price: unitPrice,
     discount_amount: discountAmount,
-    performed_by: requesterUserId,
+    performed_by: performedByUserId || requesterUserId,
     notes: normalizeString(row.service_record_notes) || null,
     amount: providedAmount ?? computedAmount,
     visit_at: resolveImportedVisitAt(row.service_record_visit_at, row.dental_record_recorded_at) || new Date().toISOString(),
@@ -768,7 +847,7 @@ function buildServiceRecordPayload(row, patientId, serviceId, requesterUserId) {
   };
 }
 
-function buildIndexedServiceRecordPayload(serviceEntry, row, patientId, serviceId, requesterUserId) {
+function buildIndexedServiceRecordPayload(serviceEntry, row, patientId, serviceId, requesterUserId, performedByUserId = null) {
   const quantity = Math.max(1, parseIntegerValue(serviceEntry.quantity, 1));
   const unitPrice = parseNumericValue(serviceEntry.unitPrice, null);
   const discountAmount = Math.max(0, parseNumericValue(serviceEntry.discountAmount, 0) ?? 0);
@@ -783,7 +862,7 @@ function buildIndexedServiceRecordPayload(serviceEntry, row, patientId, serviceI
     quantity,
     unit_price: unitPrice,
     discount_amount: discountAmount,
-    performed_by: requesterUserId,
+    performed_by: performedByUserId || requesterUserId,
     notes: normalizeString(serviceEntry.notes) || null,
     amount: providedAmount ?? computedAmount,
     visit_at: resolveImportedVisitAt(serviceEntry.visitAt, row.dental_record_recorded_at) || new Date().toISOString(),
@@ -930,6 +1009,66 @@ async function resolvePatientForRecordImport(serviceClient, patientCache, patien
 
   patientCache.set(cacheKey, patient);
   return patient;
+}
+
+async function resolveImportedDentistProfile(serviceClient, dentistCache, row) {
+  const dentistStaffId = extractImportedDentistStaffId(row);
+  const dentistName = getImportedDentistName(row);
+  if (!dentistStaffId && !dentistName) {
+    return null;
+  }
+
+  const cacheKey = dentistStaffId || dentistName.toLowerCase();
+  if (dentistCache.has(cacheKey)) {
+    return dentistCache.get(cacheKey);
+  }
+
+  let query = serviceClient
+    .from('staff_profiles')
+    .select('user_id, full_name, role, is_active')
+    .in('role', ['admin', 'associate_dentist']);
+
+  if (dentistName) {
+    query = query.ilike('full_name', dentistName);
+  }
+
+  const { data, error } = await query;
+
+  if (error) throw error;
+
+  const matches = (data ?? []).filter((staffRow) => {
+    if (dentistStaffId) {
+      return normalizeString(staffRow.user_id).toUpperCase() === dentistStaffId
+        || formatStaffImportCode(staffRow.user_id) === dentistStaffId;
+    }
+
+    return normalizeString(staffRow.full_name).toLowerCase() === cacheKey;
+  });
+  const activeMatches = matches.filter((row) => row?.is_active !== false);
+
+  if (matches.length === 0) {
+    throw new Error(
+      dentistStaffId
+        ? `Dental record dentist staff ID "${dentistStaffId}" was not found as an admin or associate dentist.`
+        : `Dental record dentist "${dentistName}" was not found as an admin or associate dentist.`,
+    );
+  }
+
+  if (activeMatches.length === 1) {
+    dentistCache.set(cacheKey, activeMatches[0]);
+    return activeMatches[0];
+  }
+
+  if (matches.length === 1) {
+    dentistCache.set(cacheKey, matches[0]);
+    return matches[0];
+  }
+
+  throw new Error(
+    dentistStaffId
+      ? `Dental record dentist staff ID "${dentistStaffId}" matches multiple staff accounts.`
+      : `Dental record dentist "${dentistName}" matches multiple staff accounts. Use a unique full name.`,
+  );
 }
 
 async function resolveServiceForImport(serviceClient, serviceCache, serviceLookupValue, validationLookups = null) {
@@ -1089,6 +1228,7 @@ async function upsertServiceRecord(serviceClient, servicePayload, requesterUserI
         quantity: servicePayload.quantity,
         unit_price: servicePayload.unit_price,
         discount_amount: servicePayload.discount_amount,
+        performed_by: servicePayload.performed_by,
         notes: servicePayload.notes,
         amount: servicePayload.amount,
         updated_by: requesterUserId,
@@ -1218,6 +1358,7 @@ router.post('/import-patient-records', async (req, res) => {
 
   const patientCache = new Map();
   const serviceCache = new Map();
+  const dentistCache = new Map();
   const validationLookups = await loadImportValidationLookups(serviceClient);
   const summary = {
     fileName,
@@ -1270,13 +1411,19 @@ router.post('/import-patient-records', async (req, res) => {
       }
 
       let dentalPayload = null;
+      const resolvedDentistProfile = await resolveImportedDentistProfile(
+        serviceClient,
+        dentistCache,
+        row,
+      );
+
       if (hasDentalData) {
         const dentalLegendIssues = validateDentalRecordLegendCodes(row, validationLookups.activeLegendCodes);
         if (dentalLegendIssues.length > 0) {
           throw new Error(dentalLegendIssues.join(' '));
         }
 
-        dentalPayload = buildDentalRecordPayload(row, resolvedPatient.id, requesterUserId);
+        dentalPayload = buildDentalRecordPayload(row, resolvedPatient.id, requesterUserId, resolvedDentistProfile);
       }
 
       const servicePayloads = [];
@@ -1327,8 +1474,16 @@ router.post('/import-patient-records', async (req, res) => {
               resolvedPatient.id,
               resolvedService.id,
               requesterUserId,
+              resolvedDentistProfile?.user_id || null,
             )
-            : buildIndexedServiceRecordPayload(normalizedServiceEntry, row, resolvedPatient.id, resolvedService.id, requesterUserId);
+            : buildIndexedServiceRecordPayload(
+              normalizedServiceEntry,
+              row,
+              resolvedPatient.id,
+              resolvedService.id,
+              requesterUserId,
+              resolvedDentistProfile?.user_id || null,
+            );
           servicePayloads.push(servicePayload);
         }
       }
