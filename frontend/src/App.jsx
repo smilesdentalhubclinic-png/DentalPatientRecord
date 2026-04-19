@@ -14,7 +14,7 @@ import AdminImport from './pages/AdminImport'
 import ResetPassword from './pages/ResetPassword'
 import Settings from './pages/Settings'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX, clearSessionStorageByPrefix } from './hooks/useSessionStorageState'
-import { isAccessTokenExpired, missingSupabaseEnv, supabase } from './lib/supabaseClient'
+import { decodeJwtPayload, isAccessTokenExpired, missingSupabaseEnv, supabase } from './lib/supabaseClient'
 import dentalLogo from './assets/DENTAL LOGO.png'
 
 const ADD_PATIENT_DRAFT_KEY = 'dent22.addPatientDraft.v1'
@@ -140,6 +140,11 @@ const getAdultBirthDateMax = () => {
   const date = new Date()
   date.setFullYear(date.getFullYear() - 18)
   return date.toISOString().split('T')[0]
+}
+
+const getSessionIdFromAccessToken = (accessToken) => {
+  const payload = decodeJwtPayload(accessToken)
+  return typeof payload?.session_id === 'string' ? payload.session_id : ''
 }
 
 function LoginRoute({
@@ -285,12 +290,12 @@ function AppRoutes() {
     if (!path || path === '/login' || path === '/reset-password') return
   }, [location.hash, location.pathname, location.search])
 
-  const loadAccessContext = useCallback(async (userId) => {
+  const loadAccessContext = useCallback(async (userId, accessToken = '') => {
     if (!supabase) return false
 
     const { data: profileData, error: profileError } = await supabase
       .from('staff_profiles')
-      .select('user_id, full_name, first_name, middle_name, last_name, suffix, birth_date, mobile_number, address, username, email, role, is_active')
+      .select('user_id, full_name, first_name, middle_name, last_name, suffix, birth_date, mobile_number, address, username, email, role, is_active, active_session_id')
       .eq('user_id', userId)
       .maybeSingle()
 
@@ -299,6 +304,15 @@ function AppRoutes() {
       setProfile(null)
       setNavItems([])
       setError('Account is not provisioned for system access.')
+      return false
+    }
+
+    const currentSessionId = getSessionIdFromAccessToken(accessToken)
+    if (currentSessionId && profileData.active_session_id && profileData.active_session_id !== currentSessionId) {
+      profileUserIdRef.current = null
+      setProfile(null)
+      setNavItems([])
+      setError('This account was logged in on another device or browser. Please log in again.')
       return false
     }
 
@@ -329,6 +343,21 @@ function AppRoutes() {
     if (inactivityTimerRef.current) {
       window.clearTimeout(inactivityTimerRef.current)
       inactivityTimerRef.current = null
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData?.session?.access_token || ''
+    if (accessToken) {
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        })
+      } catch {
+        // Best-effort cleanup only; local logout should still continue.
+      }
     }
 
     const { error: signOutError } = await supabase.auth.signOut()
@@ -406,15 +435,15 @@ function AppRoutes() {
       const shouldRefreshAccessContext = forceContextRefresh || profileUserIdRef.current !== userId
 
       if (shouldRefreshAccessContext) {
-        const hasAccess = await loadAccessContext(userId)
-        if (!hasAccess) {
-          if (showLoading && isMounted) setIsBootstrapping(false)
-          if (isMounted) setIsLoginTransitioning(false)
-          clearAuthState()
-          setError('Account is not provisioned for system access.')
-          await supabase.auth.signOut()
-          return
-        }
+          const hasAccess = await loadAccessContext(userId, nextSession.access_token || '')
+          if (!hasAccess) {
+            if (showLoading && isMounted) setIsBootstrapping(false)
+            if (isMounted) setIsLoginTransitioning(false)
+            clearAuthState()
+            setError((previous) => previous || 'Account is not provisioned for system access.')
+            await supabase.auth.signOut()
+            return
+          }
       }
 
       if (isMounted && showLoading) {
@@ -483,6 +512,28 @@ function AppRoutes() {
       const accessToken = data.session?.access_token
       if (!data.session || !accessToken || isAccessTokenExpired(accessToken)) {
         await signOutAndRedirect({ message: 'Session token expired. Please login again.' })
+        return
+      }
+
+      const { data: profileData, error: profileError } = await supabase
+        .from('staff_profiles')
+        .select('user_id, is_active, active_session_id')
+        .eq('user_id', data.session.user.id)
+        .maybeSingle()
+
+      if (!isMounted) return
+
+      const currentSessionId = getSessionIdFromAccessToken(accessToken)
+      if (
+        profileError
+        || !profileData?.user_id
+        || !profileData.is_active
+        || !currentSessionId
+        || profileData.active_session_id !== currentSessionId
+      ) {
+        await signOutAndRedirect({
+          message: 'This account was logged in on another device or browser. Please log in again.',
+        })
       }
     }
     const tokenCheckTimer = window.setInterval(() => {

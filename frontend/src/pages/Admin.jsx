@@ -1262,6 +1262,33 @@ function Admin() {
         ? archiveIdSortDirection
         : archiveNameSortDirection
   )
+  const usersCurrentSortDirectionLabel = (
+    usersSortBy === 'created'
+      ? usersCurrentSortDirection === 'asc'
+        ? 'Oldest to newest'
+        : 'Newest to oldest'
+      : usersCurrentSortDirection === 'asc'
+        ? 'Ascending'
+        : 'Descending'
+  )
+  const inactiveCurrentSortDirectionLabel = (
+    inactiveSortBy === 'inactiveDate'
+      ? inactiveCurrentSortDirection === 'asc'
+        ? 'Oldest to newest'
+        : 'Newest to oldest'
+      : inactiveCurrentSortDirection === 'asc'
+        ? 'Ascending'
+        : 'Descending'
+  )
+  const archiveCurrentSortDirectionLabel = (
+    archiveSortBy === 'archiveDate'
+      ? archiveCurrentSortDirection === 'asc'
+        ? 'Oldest to newest'
+        : 'Newest to oldest'
+      : archiveCurrentSortDirection === 'asc'
+        ? 'Ascending'
+        : 'Descending'
+  )
 
   const handlePageJump = ({ pageInput, setPageInput, setPage, totalPages, fallbackPage }) => {
     const parsedPage = Number.parseInt(pageInput, 10)
@@ -1449,8 +1476,8 @@ function Admin() {
                   <button
                     type="button"
                     className="ghost sort-direction-btn"
-                    aria-label={`Current sort direction: ${usersCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
-                    title={`Current sort direction: ${usersCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    aria-label={usersCurrentSortDirectionLabel}
+                    title={usersCurrentSortDirectionLabel}
                     onClick={() => {
                       if (usersSortBy === 'created') {
                         setUsersCreatedSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
@@ -1628,8 +1655,8 @@ function Admin() {
                   <button
                     type="button"
                     className="ghost sort-direction-btn"
-                    aria-label={`Current sort direction: ${inactiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
-                    title={`Current sort direction: ${inactiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    aria-label={inactiveCurrentSortDirectionLabel}
+                    title={inactiveCurrentSortDirectionLabel}
                     onClick={() => {
                       if (inactiveSortBy === 'inactiveDate') {
                         setInactiveDateSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
@@ -1734,8 +1761,8 @@ function Admin() {
                   <button
                     type="button"
                     className="ghost sort-direction-btn"
-                    aria-label={`Current sort direction: ${archiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
-                    title={`Current sort direction: ${archiveCurrentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                    aria-label={archiveCurrentSortDirectionLabel}
+                    title={archiveCurrentSortDirectionLabel}
                     onClick={() => {
                       if (archiveSortBy === 'archiveDate') {
                         setArchiveDateSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))

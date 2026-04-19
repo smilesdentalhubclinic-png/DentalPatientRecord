@@ -2,7 +2,11 @@ const express = require('express');
 const crypto = require('crypto');
 const { createSupabaseClient } = require('../supabase');
 const config = require('../config');
-const { getBearerToken, requireAccessToken } = require('../middleware/auth');
+const {
+  getBearerToken,
+  getSessionClaims,
+  requireAccessToken,
+} = require('../middleware/auth');
 const { sendSupabaseError } = require('../lib/response');
 const {
   isSmtpConfigured,
@@ -29,6 +33,37 @@ const VERIFICATION_PURPOSE = Object.freeze({
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+async function setActiveStaffSession(serviceClient, userId, sessionId) {
+  if (!userId || !sessionId) {
+    throw new Error('Unable to determine active session.');
+  }
+
+  const { error } = await serviceClient
+    .from('staff_profiles')
+    .update({
+      active_session_id: sessionId,
+      active_session_updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId);
+
+  if (error) throw error;
+}
+
+async function clearActiveStaffSession(serviceClient, userId, sessionId) {
+  if (!userId || !sessionId) return;
+
+  const { error } = await serviceClient
+    .from('staff_profiles')
+    .update({
+      active_session_id: null,
+      active_session_updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId)
+    .eq('active_session_id', sessionId);
+
+  if (error) throw error;
 }
 
 function isLetterOnlyName(value, { allowEmpty = false } = {}) {
@@ -445,6 +480,11 @@ router.post('/login', async (req, res) => {
 
     clearFailedLoginAlertEntry(resolvedEmail);
 
+    const serviceClient = createSupabaseClient({ useServiceRole: true });
+    const sessionAccessToken = data.session?.access_token || '';
+    const { userId, sessionId } = getSessionClaims(sessionAccessToken);
+    await setActiveStaffSession(serviceClient, userId || data.user?.id, sessionId);
+
     return res.json({
       message: 'Login successful.',
       user: data.user,
@@ -582,6 +622,11 @@ router.post('/refresh-session', async (req, res) => {
     });
 
     if (error) return sendSupabaseError(res, error, 401);
+
+    const serviceClient = createSupabaseClient({ useServiceRole: true });
+    const sessionAccessToken = data.session?.access_token || '';
+    const { userId, sessionId } = getSessionClaims(sessionAccessToken);
+    await setActiveStaffSession(serviceClient, userId || data.user?.id, sessionId);
 
     return res.json({
       message: 'Session refreshed.',
@@ -1299,6 +1344,10 @@ router.post('/logout', async (req, res) => {
         error: 'Missing bearer token. Add Authorization: Bearer <access_token>.',
       });
     }
+
+    const { userId, sessionId } = getSessionClaims(accessToken);
+    const serviceClient = createSupabaseClient({ useServiceRole: true });
+    await clearActiveStaffSession(serviceClient, userId, sessionId);
 
     const client = createSupabaseClient({ accessToken });
     const { error } = await client.auth.signOut();

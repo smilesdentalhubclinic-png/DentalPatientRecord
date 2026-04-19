@@ -1,6 +1,6 @@
 const express = require('express');
 const { createSupabaseClient } = require('../supabase');
-const { getBearerToken } = require('../middleware/auth');
+const { assertActiveStaffSession, getBearerToken } = require('../middleware/auth');
 const { sendSupabaseError } = require('../lib/response');
 
 const router = express.Router();
@@ -25,6 +25,13 @@ router.post('/:fn', async (req, res) => {
         error:
           'This RPC requires authentication. Add Authorization: Bearer <access_token>.',
       });
+    }
+
+    if (accessToken) {
+      const activeSession = await assertActiveStaffSession(accessToken);
+      if (!activeSession.ok) {
+        return res.status(activeSession.status).json(activeSession.payload);
+      }
     }
 
     const client = createSupabaseClient({ accessToken });

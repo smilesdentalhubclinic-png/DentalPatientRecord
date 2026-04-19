@@ -964,7 +964,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const loadServiceRows = useCallback(async () => {
     const { data, error: fetchError } = await supabase
       .from('service_records')
-      .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, updated_by, services(service_name, price)')
+      .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, created_at, updated_at, updated_by, services(service_name, price)')
       .eq('patient_id', id)
       .is('archived_at', null)
       .order('visit_at', { ascending: false })
@@ -973,7 +973,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       if (fetchError?.code === '42703') {
         const fallbackResult = await supabase
           .from('service_records')
-          .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, updated_by, services(service_name, price)')
+          .select('id, service_id, quantity, unit_price, discount_amount, amount, notes, visit_at, created_at, updated_by, services(service_name, price)')
           .eq('patient_id', id)
           .is('archived_at', null)
           .order('visit_at', { ascending: false })
@@ -1013,7 +1013,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
           total: 0,
           lines: [],
           by: staffMap[row.updated_by] || MISSING_AUDIT_USER_LABEL,
-          updatedAt: row.visit_at || null,
+          updatedAt: row.updated_at || row.created_at || row.visit_at || null,
         })
       }
 
@@ -1031,8 +1031,9 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       })
       bucket.total = roundMoney(bucket.total + totalAmount)
 
-      if (row.visit_at && (!bucket.updatedAt || new Date(row.visit_at).getTime() > new Date(bucket.updatedAt).getTime())) {
-        bucket.updatedAt = row.visit_at
+      const rowUpdatedAt = row.updated_at || row.created_at || row.visit_at || null
+      if (rowUpdatedAt && (!bucket.updatedAt || new Date(rowUpdatedAt).getTime() > new Date(bucket.updatedAt).getTime())) {
+        bucket.updatedAt = rowUpdatedAt
         bucket.by = staffMap[row.updated_by] || MISSING_AUDIT_USER_LABEL
       }
     })

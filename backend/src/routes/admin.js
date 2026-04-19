@@ -1,5 +1,6 @@
 const express = require('express');
 const { createSupabaseClient } = require('../supabase');
+const { assertActiveStaffSession } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -216,12 +217,22 @@ function parseTimestampValue(value) {
   const ymdSlashMatch = raw.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
   if (ymdSlashMatch) {
     const [, year, month, day] = ymdSlashMatch;
-    return new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T00:00:00.000Z`).toISOString();
+    return new Date(`${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T12:00:00.000Z`).toISOString();
+  }
+
+  const isoDateMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateMatch) {
+    const [, year, month, day] = isoDateMatch;
+    return new Date(`${year}-${month}-${day}T12:00:00.000Z`).toISOString();
   }
 
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
+}
+
+function resolveImportedVisitAt(primaryValue, fallbackValue) {
+  return parseTimestampValue(primaryValue) || parseTimestampValue(fallbackValue) || null;
 }
 
 function parseIntegerValue(value, fallback = 1) {
@@ -306,6 +317,16 @@ function parseCsv(content) {
 }
 
 async function requireAdminRequester(accessToken) {
+  const activeSession = await assertActiveStaffSession(accessToken);
+  if (!activeSession.ok) {
+    return {
+      errorResponse: {
+        status: activeSession.status,
+        payload: activeSession.payload,
+      },
+    };
+  }
+
   const requesterClient = createSupabaseClient({ accessToken });
   const { data: requesterUserData, error: requesterUserError } = await requesterClient.auth.getUser();
   if (requesterUserError || !requesterUserData?.user?.id) {
@@ -741,13 +762,13 @@ function buildServiceRecordPayload(row, patientId, serviceId, requesterUserId) {
     performed_by: requesterUserId,
     notes: normalizeString(row.service_record_notes) || null,
     amount: providedAmount ?? computedAmount,
-    visit_at: parseTimestampValue(row.service_record_visit_at) || new Date().toISOString(),
+    visit_at: resolveImportedVisitAt(row.service_record_visit_at, row.dental_record_recorded_at) || new Date().toISOString(),
     created_by: requesterUserId,
     updated_by: requesterUserId,
   };
 }
 
-function buildIndexedServiceRecordPayload(serviceEntry, patientId, serviceId, requesterUserId) {
+function buildIndexedServiceRecordPayload(serviceEntry, row, patientId, serviceId, requesterUserId) {
   const quantity = Math.max(1, parseIntegerValue(serviceEntry.quantity, 1));
   const unitPrice = parseNumericValue(serviceEntry.unitPrice, null);
   const discountAmount = Math.max(0, parseNumericValue(serviceEntry.discountAmount, 0) ?? 0);
@@ -765,7 +786,7 @@ function buildIndexedServiceRecordPayload(serviceEntry, patientId, serviceId, re
     performed_by: requesterUserId,
     notes: normalizeString(serviceEntry.notes) || null,
     amount: providedAmount ?? computedAmount,
-    visit_at: parseTimestampValue(serviceEntry.visitAt) || new Date().toISOString(),
+    visit_at: resolveImportedVisitAt(serviceEntry.visitAt, row.dental_record_recorded_at) || new Date().toISOString(),
     created_by: requesterUserId,
     updated_by: requesterUserId,
   };
@@ -1086,6 +1107,32 @@ async function upsertServiceRecord(serviceClient, servicePayload, requesterUserI
   return 'created';
 }
 
+async function createImportedServiceLogs(serviceClient, patientId, servicePayloads, requesterUserId) {
+  const uniqueVisitTimestamps = [...new Set(
+    servicePayloads
+      .map((payload) => normalizeString(payload.visit_at))
+      .filter(Boolean),
+  )];
+
+  if (uniqueVisitTimestamps.length === 0) {
+    return;
+  }
+
+  const logRows = uniqueVisitTimestamps.map((visitAt) => ({
+    patient_id: patientId,
+    action: 'service_update',
+    details: 'Imported service record migration.',
+    created_by: requesterUserId,
+    created_at: visitAt,
+  }));
+
+  const { error: insertError } = await serviceClient
+    .from('patient_logs')
+    .insert(logRows);
+
+  if (insertError) throw insertError;
+}
+
 router.post('/import-patient-migration', async (req, res) => {
   const accessToken = `${req.headers.authorization || ''}`.replace(/^Bearer\s+/i, '').trim();
   const adminContext = await requireAdminRequester(accessToken);
@@ -1281,7 +1328,7 @@ router.post('/import-patient-records', async (req, res) => {
               resolvedService.id,
               requesterUserId,
             )
-            : buildIndexedServiceRecordPayload(normalizedServiceEntry, resolvedPatient.id, resolvedService.id, requesterUserId);
+            : buildIndexedServiceRecordPayload(normalizedServiceEntry, row, resolvedPatient.id, resolvedService.id, requesterUserId);
           servicePayloads.push(servicePayload);
         }
       }
@@ -1302,6 +1349,10 @@ router.post('/import-patient-records', async (req, res) => {
         } else {
           summary.serviceRecordsUpdated += 1;
         }
+      }
+
+      if (servicePayloads.length > 0) {
+        await createImportedServiceLogs(serviceClient, resolvedPatient.id, servicePayloads, requesterUserId);
       }
     } catch (error) {
       summary.skippedRows += 1;

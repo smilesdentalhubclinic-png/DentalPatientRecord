@@ -265,6 +265,15 @@ function PatientRecords() {
         ? patientIdSortDirection
         : nameSortDirection
   )
+  const currentSortDirectionLabel = (
+    sortBy === 'registered'
+      ? currentSortDirection === 'asc'
+        ? 'Oldest to newest'
+        : 'Newest to oldest'
+      : currentSortDirection === 'asc'
+        ? 'Ascending'
+        : 'Descending'
+  )
   const getVisiblePageItems = () => {
     if (totalPages <= 3) return Array.from({ length: totalPages }, (_, index) => index + 1)
 
@@ -339,8 +348,8 @@ function PatientRecords() {
               <button
                 type="button"
                 className="ghost sort-direction-btn"
-                aria-label={`Current sort direction: ${currentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
-                title={`Current sort direction: ${currentSortDirection === 'asc' ? 'ascending' : 'descending'}`}
+                aria-label={currentSortDirectionLabel}
+                title={currentSortDirectionLabel}
                 onClick={() => {
                   if (sortBy === 'registered') {
                     setRegisteredSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))

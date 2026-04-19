@@ -466,7 +466,7 @@ function Procedures({ currentProfile }) {
             <h2>{tab === 'services' ? 'Add Service' : 'Add a Condition'}</h2>
             <div className="stack">
               <label>
-                {tab === 'services' ? 'Service Name' : 'Tooth condition'}
+                {tab === 'services' ? 'Service Name' : <><span>Tooth condition</span><span className="required-asterisk">*</span></>}
                 <input
                   type="text"
                   value={tab === 'services' ? addServiceName : addConditionName}
@@ -492,7 +492,7 @@ function Procedures({ currentProfile }) {
               ) : null}
               {tab === 'legend' ? (
                 <label>
-                  Legend
+                  <><span>Legend</span><span className="required-asterisk">*</span></>
                   <input
                     type="text"
                     maxLength={3}

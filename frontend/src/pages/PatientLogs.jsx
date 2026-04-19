@@ -9,12 +9,24 @@ const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
 const MONTH_ABBR = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.']
 const PATIENT_LOGS_UI_STORAGE_PREFIX = `${UI_SESSION_STORAGE_PREFIX}patientLogs.`
+const getSortDirectionLabel = (direction, isDateSort = false) => (
+  isDateSort
+    ? direction === 'asc'
+      ? 'Oldest to newest'
+      : 'Newest to oldest'
+    : direction === 'asc'
+      ? 'Ascending'
+      : 'Descending'
+)
 
-const formatDateTime = (value) => {
+const isFreshFileImportLog = (details) => `${details ?? ''}`.trim().toLowerCase() === 'imported service record migration.'
+
+const formatDateTime = (value, details) => {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
   const dateLabel = `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
+  if (isFreshFileImportLog(details)) return `${dateLabel} --`
   const timeLabel = date.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
@@ -171,8 +183,8 @@ function PatientLogs() {
               <button
                 type="button"
                 className="ghost sort-direction-btn"
-                aria-label={`Current sort direction: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
-                title={`Current sort direction: ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+                aria-label={getSortDirectionLabel(sortOrder, true)}
+                title={getSortDirectionLabel(sortOrder, true)}
                 onClick={() => {
                   setSortOrder((previous) => (previous === 'asc' ? 'desc' : 'asc'))
                   setCurrentPage(1)
@@ -211,7 +223,7 @@ function PatientLogs() {
                     <div key={row.id} className="table-row">
                       <span>{formatPatientCode(row.patient_code, row.patient_id)}</span>
                       <span>{row.patient_name}</span>
-                      <span>{formatDateTime(row.logged_at)}</span>
+                      <span>{formatDateTime(row.logged_at, row.details)}</span>
                       <span>{row.actor_name}</span>
                     </div>
                   ))}
