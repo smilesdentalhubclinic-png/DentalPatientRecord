@@ -1248,6 +1248,7 @@ router.post('/admin-create-user', requireAccessToken, async (req, res) => {
         role,
         full_name: fullName,
         username,
+        password_updated_at: new Date().toISOString(),
       },
       app_metadata: {
         provider: 'email',

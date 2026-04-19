@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import clinicLogo from '../assets/DENTAL LOGO.png'
@@ -153,6 +153,12 @@ const getProfileNameParts = (profile) => {
 
 function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
   const [profileOverride, setProfileOverride] = useState(null)
+  const [authUserOverride, setAuthUserOverride] = useState(
+    currentSessionUser?.user_metadata?.password_updated_at ? currentSessionUser : null,
+  )
+  const [isAuthUserResolved, setIsAuthUserResolved] = useState(
+    Boolean(currentSessionUser?.user_metadata?.password_updated_at),
+  )
   const [profileForm, setProfileForm] = useState(() => {
     const parsedName = getProfileNameParts(currentProfile)
     return {
@@ -192,14 +198,42 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
       ? profileOverride
       : currentProfile
   ) ?? {}
+  const authUserSource = authUserOverride || (currentSessionUser?.user_metadata?.password_updated_at ? currentSessionUser : null)
   const parsedProfileName = getProfileNameParts(profileSource)
   const lastPasswordUpdatedAt = (
     passwordUpdatedAtOverride
-    || currentSessionUser?.user_metadata?.password_updated_at
-    || currentSessionUser?.updated_at
-    || currentSessionUser?.last_sign_in_at
+    || authUserSource?.user_metadata?.password_updated_at
+    || (isAuthUserResolved ? (authUserSource?.created_at || currentSessionUser?.created_at) : '')
     || ''
   )
+
+  useEffect(() => {
+    if (currentSessionUser?.user_metadata?.password_updated_at) {
+      setAuthUserOverride(currentSessionUser)
+      setIsAuthUserResolved(true)
+    }
+  }, [currentSessionUser])
+
+  useEffect(() => {
+    let isMounted = true
+
+    const syncAuthUser = async () => {
+      const { data, error: authUserError } = await supabase.auth.getUser()
+      if (!isMounted) return
+      if (authUserError || !data?.user) {
+        setIsAuthUserResolved(true)
+        return
+      }
+      setAuthUserOverride(data.user)
+      setIsAuthUserResolved(true)
+    }
+
+    void syncAuthUser()
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   const closeSuccessModal = () => {
     setIsSuccessModalOpen(false)
@@ -536,6 +570,7 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
 
       setNewPassword('')
       setConfirmPassword('')
+      setAuthUserOverride(payload?.user || null)
       setPasswordUpdatedAtOverride(payload?.passwordUpdatedAt || payload?.user?.user_metadata?.password_updated_at || '')
       setSuccessMessage('Password updated successfully.')
       setIsSuccessModalOpen(true)
