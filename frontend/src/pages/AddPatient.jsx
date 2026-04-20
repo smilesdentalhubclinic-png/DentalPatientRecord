@@ -153,7 +153,7 @@ const calculateAgeFromBirthdate = (birthdate) => {
 
 const getMaxBirthdateIso = () => {
   const maxBirthdate = new Date()
-  maxBirthdate.setFullYear(maxBirthdate.getFullYear() - 2)
+  maxBirthdate.setMonth(maxBirthdate.getMonth() - 6)
   return maxBirthdate.toISOString().slice(0, 10)
 }
 
@@ -496,7 +496,7 @@ function AddPatient() {
     }
 
     if (hasInvalidBirthdateAge) {
-      setValidationMessage('Patient must be at least 2 years old.')
+      setValidationMessage('Patient must be at least 6 months old.')
       return false
     }
 
@@ -658,7 +658,7 @@ function AddPatient() {
     }
 
     if (parsedIso > maxBirthdateIso) {
-      setValidationMessage('Patient must be at least 2 years old.')
+      setValidationMessage('Patient must be at least 6 months old.')
       setPatientField('birthdate', '')
       setInvalidPatientFields((previous) => ({ ...previous, birthdate: true }))
       return

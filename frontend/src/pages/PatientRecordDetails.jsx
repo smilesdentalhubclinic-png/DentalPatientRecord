@@ -365,6 +365,12 @@ const calculateAge = (birthDate) => {
   return age < 0 ? '-' : age
 }
 
+const getMaxBirthdateIso = () => {
+  const maxBirthdate = new Date()
+  maxBirthdate.setMonth(maxBirthdate.getMonth() - 6)
+  return maxBirthdate.toISOString().slice(0, 10)
+}
+
 const normalizeSex = (value) => {
   const normalized = `${value || ''}`.trim().toLowerCase()
   if (normalized === 'm' || normalized === 'male') return 'Male'
@@ -1372,9 +1378,9 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       return
     }
 
-    const maxIso = new Date().toISOString().slice(0, 10)
+    const maxIso = getMaxBirthdateIso()
     if (parsedIso > maxIso) {
-      setError('Birthdate cannot be in the future.')
+      setError('Patient must be at least 6 months old.')
       setBirthdateInput(formatDateInputDisplay(patient.birthdate))
       return
     }
@@ -2884,7 +2890,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                     ref={birthdatePickerRef}
                     type="date"
                     className="birthdate-picker-hidden"
-                    max={new Date().toISOString().slice(0, 10)}
+                    max={getMaxBirthdateIso()}
                     value={patient.birthdate || ''}
                     onChange={(event) => {
                       const iso = event.target.value
