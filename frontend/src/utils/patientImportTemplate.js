@@ -112,7 +112,7 @@ const PATIENT_SAMPLE_ROWS = [
     middle_name: 'Santos',
     suffix: '',
     sex: 'Male',
-    birth_date: '1995/06/15',
+    birth_date: '06/15/1995',
     phone: '09171234567',
     email: 'juan.delacruz@example.com',
     address: 'Unit 8, Block 3, San Pedro Heights, San Pedro City, Laguna',
@@ -146,7 +146,7 @@ const PATIENT_SAMPLE_ROWS = [
     medical_q9: 'NO',
     medical_q10: 'NO',
     dental_previous_dentist: 'Dr. Lopez',
-    dental_last_exam: '2026/03/01',
+    dental_last_exam: '03/01/2026',
     dental_consultation_reason: 'Routine dental checkup and cleaning',
     dental_q1: 'NO',
     dental_q2: 'YES',
@@ -174,7 +174,7 @@ const PATIENT_SAMPLE_ROWS = [
     middle_name: 'Torres',
     suffix: '',
     sex: 'Female',
-    birth_date: '1988/11/02',
+    birth_date: '11/02/1988',
     phone: '09190001111',
     email: 'angela.reyes@example.com',
     address: 'Rose Street, Santa Rosa City, Laguna',
@@ -208,7 +208,7 @@ const PATIENT_SAMPLE_ROWS = [
     medical_q9: 'NO',
     medical_q10: 'NO',
     dental_previous_dentist: 'Dr. Ramos',
-    dental_last_exam: '2026/02/15',
+    dental_last_exam: '02/15/2026',
     dental_consultation_reason: 'Tooth sensitivity check',
     dental_q1: 'NO',
     dental_q2: 'NO',
@@ -236,7 +236,7 @@ const PATIENT_SAMPLE_ROWS = [
     middle_name: 'Lopez',
     suffix: '',
     sex: 'Female',
-    birth_date: '2011/07/13',
+    birth_date: '07/13/2011',
     phone: '09182225555',
     email: '',
     address: 'Southville, Binan City, Laguna',
@@ -270,7 +270,7 @@ const PATIENT_SAMPLE_ROWS = [
     medical_q9: 'NO',
     medical_q10: 'NO',
     dental_previous_dentist: 'Dr. Keith San Miguel',
-    dental_last_exam: '2026/01/28',
+    dental_last_exam: '01/28/2026',
     dental_consultation_reason: 'Upper-right tooth pain',
     dental_q1: 'YES',
     dental_q2: 'NO',
@@ -298,7 +298,7 @@ const PATIENT_SAMPLE_ROWS = [
     middle_name: 'Navarro',
     suffix: 'Jr.',
     sex: 'Male',
-    birth_date: '1976/04/21',
+    birth_date: '04/21/1976',
     phone: '09175554444',
     email: 'roberto.garcia@example.com',
     address: 'Poblacion, Cabuyao City, Laguna',
@@ -332,7 +332,7 @@ const PATIENT_SAMPLE_ROWS = [
     medical_q9: 'NO',
     medical_q10: 'NO',
     dental_previous_dentist: 'Dr. Mendoza',
-    dental_last_exam: '2025/12/18',
+    dental_last_exam: '12/18/2025',
     dental_consultation_reason: 'Broken filling replacement',
     dental_q1: 'YES',
     dental_q2: 'YES',
@@ -360,7 +360,7 @@ const PATIENT_SAMPLE_ROWS = [
     middle_name: 'Perez',
     suffix: '',
     sex: 'Female',
-    birth_date: '2001/09/09',
+    birth_date: '09/09/2001',
     phone: '09173334444',
     email: 'sofia.villanueva@example.com',
     address: 'Nuvali, Santa Rosa City, Laguna',
@@ -394,7 +394,7 @@ const PATIENT_SAMPLE_ROWS = [
     medical_q9: 'NO',
     medical_q10: 'YES',
     dental_previous_dentist: 'Dr. Aquino',
-    dental_last_exam: '2026/04/05',
+    dental_last_exam: '04/05/2026',
     dental_consultation_reason: 'Teeth whitening consultation',
     dental_q1: 'NO',
     dental_q2: 'NO',
@@ -451,7 +451,7 @@ const RECORDS_SAMPLE_ROWS = [
     patient_id: 'PT-000001',
     patient_first_name: 'Juan',
     patient_last_name: 'Dela Cruz',
-    dental_record_recorded_at: '2026/04/15',
+    dental_record_recorded_at: '04/15/2026',
     dental_record_findings: 'General cleaning and chart review',
     dental_record_treatment: 'Oral prophylaxis',
     dental_record_dentist_staff_id: 'ST-100001',
@@ -484,7 +484,7 @@ const RECORDS_SAMPLE_ROWS = [
     patient_id: 'PT-000002',
     patient_first_name: 'Angela',
     patient_last_name: 'Reyes',
-    dental_record_recorded_at: '2026/04/12',
+    dental_record_recorded_at: '04/12/2026',
     dental_record_findings: 'Sensitivity on upper incisor with old composite margin stain',
     dental_record_treatment: 'Composite restoration',
     dental_record_dentist_staff_id: 'ST-100002',
@@ -509,7 +509,7 @@ const RECORDS_SAMPLE_ROWS = [
     patient_id: 'PT-000003',
     patient_first_name: 'Kylie',
     patient_last_name: 'Rivera',
-    dental_record_recorded_at: '2026/04/02',
+    dental_record_recorded_at: '04/02/2026',
     dental_record_findings: 'Upper-right teeth show caries',
     dental_record_treatment: 'Glass ionomer restoration advised',
     dental_record_dentist_staff_id: 'ST-100003',
@@ -538,7 +538,7 @@ const RECORDS_SAMPLE_ROWS = [
     patient_id: 'PT-000004',
     patient_first_name: 'Roberto',
     patient_last_name: 'Garcia',
-    dental_record_recorded_at: '2026/03/20',
+    dental_record_recorded_at: '03/20/2026',
     dental_record_findings: 'Deep caries with percussion tenderness',
     dental_record_treatment: 'Extraction performed',
     dental_record_dentist_staff_id: 'ST-100004',
@@ -567,7 +567,7 @@ const RECORDS_SAMPLE_ROWS = [
     patient_id: 'PT-000005',
     patient_first_name: 'Sofia',
     patient_last_name: 'Villanueva',
-    dental_record_recorded_at: '2026/04/05',
+    dental_record_recorded_at: '04/05/2026',
     dental_record_findings: 'Healthy dentition for whitening assessment',
     dental_record_treatment: 'Whitening consultation and impressions',
     dental_record_dentist_staff_id: 'ST-100005',
@@ -668,9 +668,9 @@ const setSheetColumns = (worksheet, columns) => {
 }
 
 const DATE_FORMAT_HINT_BY_KEY = {
-  birth_date: 'yyyy/mm/dd',
-  dental_last_exam: 'yyyy/mm/dd',
-  dental_record_recorded_at: 'yyyy/mm/dd',
+  birth_date: 'mm/dd/yyyy',
+  dental_last_exam: 'mm/dd/yyyy',
+  dental_record_recorded_at: 'mm/dd/yyyy',
 }
 
 const toSentenceCaseLabel = (value) => {
@@ -1018,10 +1018,10 @@ export const downloadRecordsTemplateWorkbook = async () => downloadWorkbook(
 )
 
 const formatDateValue = (date) => {
-  const year = date.getFullYear()
   const month = `${date.getMonth() + 1}`.padStart(2, '0')
   const day = `${date.getDate()}`.padStart(2, '0')
-  return `${year}-${month}-${day}`
+  const year = date.getFullYear()
+  return `${month}/${day}/${year}`
 }
 
 const toCsvSafeValue = (value) => {

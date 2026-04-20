@@ -201,6 +201,7 @@ const cloneDentalRecord = (record) => ({
 const initialPatient = () => ({
   dbId: '',
   code: '',
+  isActive: true,
   lastName: '',
   firstName: '',
   middleName: '',
@@ -396,6 +397,7 @@ const normalizeError = (error, fallback = 'Unexpected error occurred.') => {
 }
 
 const MISSING_AUDIT_USER_LABEL = '-'
+const INACTIVE_PATIENT_UPDATE_MESSAGE = 'Inactive patients cannot be updated.'
 
 const formatPatientCode = (patientCode, patientId) => {
   const raw = `${patientCode || ''}`.trim()
@@ -641,6 +643,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const lastExamPickerRef = useRef(null)
 
   const patientCode = useMemo(() => formatPatientCode(patient.code, patient.dbId), [patient.code, patient.dbId])
+  const isPatientInactive = patient.isActive === false
   const defaultLegendCode = useMemo(() => {
     const goodConditionLegend = legendOptions.find((legend) => `${legend.condition_name ?? ''}`.trim().toLowerCase() === 'good condition')
     return goodConditionLegend?.code || legendOptions[0]?.code || '?'
@@ -753,6 +756,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       .select(`
         id,
         patient_code,
+        is_active,
         first_name,
         last_name,
         middle_name,
@@ -794,6 +798,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     const nextPatient = {
       dbId: row.id,
       code: row.patient_code,
+      isActive: row.is_active !== false,
       lastName: row.last_name || '',
       firstName: row.first_name || '',
       middleName: row.middle_name || '',
@@ -1356,6 +1361,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const openPatientModal = (nextModal) => {
+    if (isPatientInactive) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return
+    }
     takeSnapshot()
     setModal(nextModal)
   }
@@ -1406,6 +1415,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const openServiceEdit = (row = null) => {
+    if (isPatientInactive) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return
+    }
     if (isReceptionist && !row) {
       setError('Receptionist cannot add service records.')
       return
@@ -1445,7 +1458,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const openCustomServiceModal = (lineIndex) => {
-    if (!canManageServiceDetails) return
+    if (!canManageServiceDetails || isPatientInactive) return
     setCustomServiceLineIndex(lineIndex)
     setCustomServiceName('')
     setCustomServicePrice('')
@@ -1486,6 +1499,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
   const saveCustomService = async () => {
     if (!canManageServiceDetails || customServiceLineIndex === null) return
+    if (isPatientInactive) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return
+    }
 
     const nextName = toTitleCase(sanitizeServiceNameInput(customServiceName).trim())
     const nextPrice = toMoney(customServicePrice)
@@ -1592,6 +1609,11 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }, [id])
 
   const updatePatientSection = useCallback(async (patch) => {
+    if (patient.isActive === false) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return
+    }
+
     setIsSaving(true)
     setError('')
 
@@ -1600,12 +1622,16 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       const actorId = authData?.user?.id ?? null
       const updatePayload = { ...patch, updated_by: actorId }
 
-      let { error: updateError } = await supabase
+      const { data: updatedPatient, error: updateError } = await supabase
         .from('patients')
         .update(updatePayload)
         .eq('id', id)
+        .eq('is_active', true)
+        .select('id')
+        .maybeSingle()
 
       if (updateError) throw updateError
+      if (!updatedPatient) throw new Error(INACTIVE_PATIENT_UPDATE_MESSAGE)
 
       setModal(null)
       await loadPatient()
@@ -1618,7 +1644,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     } finally {
       setIsSaving(false)
     }
-  }, [id, loadPatient])
+  }, [id, loadPatient, patient.isActive])
 
   const saveDetails = async () => {
     if (!patient.firstName.trim() || !patient.lastName.trim()) {
@@ -1771,6 +1797,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const saveService = async () => {
+    if (isPatientInactive) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return false
+    }
     setServiceFormError('')
     setError('')
 
@@ -2084,6 +2114,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const requestServiceSave = () => {
+    if (isPatientInactive) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return
+    }
     if (isReceptionist) {
       if (!serviceForm.originalDate) {
         setServiceFormError('Receptionist cannot add service records.')
@@ -2124,6 +2158,10 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const saveDentalRecord = async () => {
+    if (isPatientInactive) {
+      setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
+      return
+    }
     if (currentRole === 'receptionist') {
       setError('Receptionist is not allowed to update dental records.')
       return
@@ -2639,7 +2677,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   ))}
                 </select>
               </label>
-              {currentRole !== 'receptionist' ? (
+              {currentRole !== 'receptionist' && !isPatientInactive ? (
                 <button
                   type="button"
                   className="primary"
@@ -2669,7 +2707,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <article className="pr-card">
                   <div className="pr-card-head">
                     <h3>Details</h3>
-                    <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('details')}>&#9998;</button>
+                    {!isPatientInactive ? <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('details')}>&#9998;</button> : null}
                   </div>
                   <div className="pr-detail-list">
                     <div className="pr-detail-item pr-detail-item-compact"><span className="pr-detail-label">Nickname</span><span className="pr-detail-value">{patient.nickname || '-'}</span></div>
@@ -2678,14 +2716,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                     <div className="pr-detail-item pr-detail-item-compact"><span className="pr-detail-label">Civil Status</span><span className="pr-detail-value">{patient.civilStatus || '-'}</span></div>
                     <div className="pr-detail-item"><span className="pr-detail-label">Birthdate</span><span className="pr-detail-value">{formatDateOnlyLong(patient.birthdate)}</span></div>
                     <div className="pr-detail-item"><span className="pr-detail-label">Occupation</span><span className="pr-detail-value">{patient.occupation || '-'}</span></div>
-                    <div className="pr-detail-item pr-detail-item-wide"><span className="pr-detail-label">Mobile Number</span><span className="pr-detail-value">{patient.mobile || '-'}</span></div>
+                    <div className="pr-detail-item pr-detail-item-wide"><span className="pr-detail-label">Mobile Number</span><span className="pr-detail-value">{formatPhilippineMobileDisplay(patient.mobile)}</span></div>
                     <div className="pr-detail-item pr-detail-item-wide"><span className="pr-detail-label">Current Home Address</span><span className="pr-detail-value">{patient.address || '-'}</span></div>
                     <div className="pr-detail-item pr-detail-item-wide"><span className="pr-detail-label">Office Address</span><span className="pr-detail-value">{patient.officeAddress || '-'}</span></div>
                     <div className="pr-detail-item pr-detail-item-wide"><span className="pr-detail-label">Email</span><span className="pr-detail-value">{patient.email || '-'}</span></div>
                     <div className="pr-detail-divider" aria-hidden="true" />
                     <div className="pr-detail-group pr-detail-group-three">
                       <div className="pr-detail-item"><span className="pr-detail-label">Guardian Name</span><span className="pr-detail-value">{patient.guardianName || '-'}</span></div>
-                      <div className="pr-detail-item"><span className="pr-detail-label">Guardian Mobile</span><span className="pr-detail-value">{patient.guardianMobileNumber || '-'}</span></div>
+                      <div className="pr-detail-item"><span className="pr-detail-label">Guardian Mobile</span><span className="pr-detail-value">{formatPhilippineMobileDisplay(patient.guardianMobileNumber)}</span></div>
                       <div className="pr-detail-item"><span className="pr-detail-label">Guardian Occupation</span><span className="pr-detail-value">{patient.guardianOccupation || '-'}</span></div>
                     </div>
                     <div className="pr-detail-item pr-detail-item-wide"><span className="pr-detail-label">Guardian Address</span><span className="pr-detail-value">{patient.guardianOfficeAddress || '-'}</span></div>
@@ -2695,7 +2733,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   <article className="pr-card">
                     <div className="pr-card-head">
                       <h3>Health Status</h3>
-                      <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('health')}>&#9998;</button>
+                      {!isPatientInactive ? <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('health')}>&#9998;</button> : null}
                     </div>
                     <div className="mini-check-grid three-col health-status-grid">
                       {HEALTH.map((item) => <label key={item}><input type="checkbox" checked={health[item]} readOnly />{item}</label>)}
@@ -2710,7 +2748,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                   <article className="pr-card">
                     <div className="pr-card-head">
                       <h3>Allergen Information</h3>
-                      <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('allergen')}>&#9998;</button>
+                      {!isPatientInactive ? <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('allergen')}>&#9998;</button> : null}
                     </div>
                     <div className="mini-check-grid two-col allergen-info-grid">
                       {ALLERGENS.map((item) => <label key={item}><input type="checkbox" checked={allergens.values[item]} readOnly />{item}</label>)}
@@ -2729,7 +2767,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <article className="pr-card">
                   <div className="pr-card-head">
                     <h3>Dental History</h3>
-                    <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('dental-history')}>&#9998;</button>
+                    {!isPatientInactive ? <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('dental-history')}>&#9998;</button> : null}
                   </div>
                   <div className="two-field-line"><p><strong>Name of Previous Dentist</strong><span>{dentalHistory.previous || '-'}</span></p><p><strong>Date of last exam</strong><span>{formatDateOnlyLong(dentalHistory.lastExam)}</span></p></div>
                   <p className="single-field-line"><strong>What is the reason for Dental Consultation</strong><span>{dentalHistory.reason || '-'}</span></p>
@@ -2750,7 +2788,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <article className="pr-card">
                   <div className="pr-card-head">
                     <h3>Medical History</h3>
-                    <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('medical-history')}>&#9998;</button>
+                    {!isPatientInactive ? <button type="button" className="mini-edit-btn" title="Update" onClick={() => openPatientModal('medical-history')}>&#9998;</button> : null}
                   </div>
                   <div className="two-field-line"><p><strong>Name of Physician/Medical Doctor</strong><span>{medicalHistory.physician || '-'}</span></p><p><strong>Specialty (if available)</strong><span>{medicalHistory.specialty || '-'}</span></p></div>
                   <p className="single-field-line"><strong>Address</strong><span>{medicalHistory.address || '-'}</span></p>
@@ -2835,7 +2873,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               <div key={row.id} className="service-list-row">
                 <span>{formatDateOnly(row.date)}</span>
                 <button type="button" className="view" onClick={() => { setSelectedService(row); setModal('service-view') }}>View</button>
-                <button type="button" className="mini-edit-btn" title="Update" onClick={() => openServiceEdit(row)}>&#9998;</button>
+                {!isPatientInactive ? <button type="button" className="mini-edit-btn" title="Update" onClick={() => openServiceEdit(row)}>&#9998;</button> : null}
               </div>
             ))}
             {serviceRows.length === 0 ? <p>No service records yet.</p> : null}

@@ -182,6 +182,20 @@ const buildSystemUserEmail = (username) => {
   return normalizedUsername ? `${normalizedUsername}@smilesdentalhub.local` : ''
 }
 
+const toPhilippineLocalMobileInput = (value = '') => {
+  const digits = `${value || ''}`.replace(/\D/g, '')
+  if (!digits) return ''
+  if (digits.startsWith('63') && digits.length >= 12) return digits.slice(2, 12)
+  if (digits.startsWith('0') && digits.length >= 11) return digits.slice(1, 11)
+  if (digits.startsWith('9') && digits.length >= 10) return digits.slice(0, 10)
+  return digits.slice(0, 10)
+}
+
+const formatPhilippineMobileDisplay = (value = '') => {
+  const localDigits = toPhilippineLocalMobileInput(value)
+  return localDigits ? `+63${localDigits}` : '-'
+}
+
 const formatStaffDisplayName = (profile) => {
   const firstName = `${profile?.first_name ?? ''}`.trim()
   const middleName = `${profile?.middle_name ?? ''}`.trim()
@@ -2045,7 +2059,7 @@ function Admin() {
               <label>Username<input className={isEditingUser ? 'is-editable' : ''} type="text" value={userForm.username} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, username: e.target.value }))} /></label>
               <label>Birthday<input className={isEditingUser ? 'is-editable' : ''} type={isEditingUser ? 'date' : 'text'} value={isEditingUser ? userForm.birth_date : formatDateOnly(userForm.birth_date)} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, birth_date: e.target.value }))} /></label>
               <label>Age<input className={isEditingUser ? 'is-locked' : ''} type="text" value={calculateAge(userForm.birth_date)} readOnly /></label>
-              <label className="span-2">Mobile Number<input className={isEditingUser ? 'is-editable' : ''} type="text" value={isEditingUser ? userForm.mobile_number : (userForm.mobile_number || '-')} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, mobile_number: e.target.value }))} /></label>
+              <label className="span-2">Mobile Number<input className={isEditingUser ? 'is-editable' : ''} type="text" value={isEditingUser ? userForm.mobile_number : formatPhilippineMobileDisplay(userForm.mobile_number)} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, mobile_number: e.target.value }))} /></label>
               <label className="span-2">Address<input className={isEditingUser ? 'is-editable' : ''} type="text" value={isEditingUser ? userForm.address : (userForm.address || '-')} readOnly={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, address: e.target.value }))} /></label>
               <label>Role<select className={isEditingUser ? 'is-editable' : ''} value={userForm.role} disabled={!isEditingUser} onChange={(e) => setUserForm((p) => ({ ...p, role: e.target.value }))}>{ROLE_OPTIONS.map((role) => <option key={role.value} value={role.value}>{role.label}</option>)}</select></label>
             </div>
