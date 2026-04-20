@@ -61,9 +61,25 @@ const OCCLUSION_FIELDS = [
 ];
 
 const MAX_SERVICE_IMPORT_COLUMNS = 10;
+const PERSON_NAME_PATTERN = /^[A-Za-z]+(?: [A-Za-z]+)*$/;
+const MEDICAL_NOTE_REQUIRED_INDEXES = new Set([1, 3, 4]);
+const DENTAL_NOTE_REQUIRED_INDEXES = new Set([1]);
 
 function normalizeString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function sanitizeLetterNameInput(value) {
+  return `${value ?? ''}`
+    .replace(/[^A-Za-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\s+/g, '');
+}
+
+function isValidLetterName(value, { allowEmpty = false } = {}) {
+  const normalized = sanitizeLetterNameInput(value).trim();
+  if (!normalized) return allowEmpty;
+  return PERSON_NAME_PATTERN.test(normalized);
 }
 
 function normalizeImportHeader(header) {
@@ -110,7 +126,6 @@ function normalizeSex(value) {
   const raw = normalizeString(value).toLowerCase();
   if (raw === 'male' || raw === 'm') return 'Male';
   if (raw === 'female' || raw === 'f') return 'Female';
-  if (raw === 'other') return 'Other';
   return '';
 }
 
@@ -240,6 +255,159 @@ function parseDateValue(value) {
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString().slice(0, 10);
+}
+
+function getMinimumPatientBirthDateIso() {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - 6);
+  return cutoff.toISOString().slice(0, 10);
+}
+
+function isPatientAtLeastSixMonthsOld(birthDate) {
+  return Boolean(birthDate) && birthDate <= getMinimumPatientBirthDateIso();
+}
+
+function isPhilippineMobileNumber(value) {
+  return /^\+639\d{9}$/.test(`${value || ''}`);
+}
+
+function calculateAgeFromBirthDate(birthDate) {
+  if (!birthDate) return null;
+  const dob = new Date(`${birthDate}T00:00:00`);
+  if (Number.isNaN(dob.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - dob.getFullYear();
+  const monthDelta = now.getMonth() - dob.getMonth();
+  if (monthDelta < 0 || (monthDelta === 0 && now.getDate() < dob.getDate())) age -= 1;
+  return age >= 0 ? age : null;
+}
+
+function validateHistoryAnswers(answers, notes, totalQuestions, noteRequiredIndexes, label) {
+  for (let index = 0; index < totalQuestions; index += 1) {
+    const answer = normalizeYesNo(answers?.[`${index}`]);
+    if (!answer) {
+      return `Please answer all questions under ${label}. Missing question ${index + 1}.`;
+    }
+
+    if (noteRequiredIndexes.has(index) && answer === 'YES' && !normalizeString(notes?.[`${index}`])) {
+      return `Please complete the required follow-up detail under ${label} for question ${index + 1}.`;
+    }
+  }
+
+  return '';
+}
+
+function validateImportedPatientPayload(row, patientPayload) {
+  const errors = [];
+  const rawBirthDate = normalizeString(row.birth_date);
+  const rawSex = normalizeString(row.sex);
+  const rawCivilStatus = normalizeString(row.civil_status);
+  const rawAuthorizationAccepted = normalizeString(row.authorization_accepted);
+
+  if (!patientPayload.first_name || !patientPayload.last_name || !patientPayload.sex || !patientPayload.birth_date) {
+    errors.push('first_name, last_name, sex, and birth_date are required.');
+  }
+
+  if (!patientPayload.civil_status) {
+    if (!rawCivilStatus) {
+      errors.push('civil_status is required.');
+    } else {
+      errors.push('civil_status must be Single, Married, Widowed, Divorced, or Separated.');
+    }
+  }
+
+  if (!patientPayload.address) {
+    errors.push('address is required.');
+  }
+
+  if (!patientPayload.phone) {
+    errors.push('phone is required.');
+  } else if (!isPhilippineMobileNumber(patientPayload.phone)) {
+    errors.push('phone must be a valid Philippine mobile number.');
+  }
+
+  if (!patientPayload.occupation) {
+    errors.push('occupation is required.');
+  }
+
+  if (rawBirthDate && !patientPayload.birth_date) {
+    errors.push('birth_date must be a valid date.');
+  }
+
+  if (rawSex && !patientPayload.sex) {
+    errors.push('sex must be Male or Female.');
+  }
+
+  if (!isValidLetterName(row.first_name)) {
+    errors.push('first_name must contain letters only.');
+  }
+
+  if (!isValidLetterName(row.last_name)) {
+    errors.push('last_name must contain letters only.');
+  }
+
+  if (!isValidLetterName(row.middle_name, { allowEmpty: true })) {
+    errors.push('middle_name must contain letters only.');
+  }
+
+  if (!isValidLetterName(row.occupation)) {
+    errors.push('occupation must contain letters only.');
+  }
+
+  if (patientPayload.birth_date && !isPatientAtLeastSixMonthsOld(patientPayload.birth_date)) {
+    errors.push('patient must be at least 6 months old.');
+  }
+
+  const age = calculateAgeFromBirthDate(patientPayload.birth_date);
+  const isMinor = age !== null && age < 18;
+
+  if (isMinor) {
+    if (!patientPayload.guardian_name) {
+      errors.push('guardian_name is required for minor patients.');
+    }
+
+    if (!patientPayload.guardian_mobile_number) {
+      errors.push('guardian_mobile_number is required for minor patients.');
+    } else if (!isPhilippineMobileNumber(patientPayload.guardian_mobile_number)) {
+      errors.push('guardian_mobile_number must be a valid Philippine mobile number.');
+    }
+
+    if (!patientPayload.guardian_occupation) {
+      errors.push('guardian_occupation is required for minor patients.');
+    } else if (!isValidLetterName(row.guardian_occupation)) {
+      errors.push('guardian_occupation must contain letters only.');
+    }
+  } else if (patientPayload.guardian_mobile_number && !isPhilippineMobileNumber(patientPayload.guardian_mobile_number)) {
+    errors.push('guardian_mobile_number must be a valid Philippine mobile number.');
+  }
+
+  const medicalHistoryError = validateHistoryAnswers(
+    patientPayload.medical_history?.answers,
+    patientPayload.medical_history?.notes,
+    10,
+    MEDICAL_NOTE_REQUIRED_INDEXES,
+    'Medical History',
+  );
+  if (medicalHistoryError) {
+    errors.push(medicalHistoryError);
+  }
+
+  const dentalHistoryError = validateHistoryAnswers(
+    patientPayload.dental_history?.answers,
+    patientPayload.dental_history?.notes,
+    18,
+    DENTAL_NOTE_REQUIRED_INDEXES,
+    'Dental History',
+  );
+  if (dentalHistoryError) {
+    errors.push(dentalHistoryError);
+  }
+
+  if (!rawAuthorizationAccepted || patientPayload.authorization_accepted !== true) {
+    errors.push('authorization_accepted must be TRUE.');
+  }
+
+  return errors;
 }
 
 function parseTimestampValue(value) {
@@ -1310,9 +1478,10 @@ router.post('/import-patient-migration', async (req, res) => {
 
     try {
       const patientPayload = buildPatientPayload(row, requesterUserId);
-      if (!patientPayload.first_name || !patientPayload.last_name || !patientPayload.sex || !patientPayload.birth_date) {
+      const patientValidationErrors = validateImportedPatientPayload(row, patientPayload);
+      if (patientValidationErrors.length > 0) {
         summary.skippedRows += 1;
-        summary.errors.push(`Row ${rowNumber}: first_name, last_name, sex, and birth_date are required.`);
+        summary.errors.push(`Row ${rowNumber}: ${patientValidationErrors.join(' ')}`);
         continue;
       }
 
