@@ -5,6 +5,7 @@ import FilterDateInput from '../components/FilterDateInput'
 import SortDirectionIcon from '../components/SortDirectionIcon'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
+import { recordSystemAudit } from '../utils/auditLog'
 
 const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
@@ -151,6 +152,14 @@ function PatientRecords() {
       if (logError) {
         setError(logError.message)
       }
+
+      await recordSystemAudit({
+        action: nextIsActive ? 'patient_retrieved' : 'patient_inactivated',
+        entityType: 'patient',
+        entityId: row.id,
+        entityLabel: `${row.last_name}, ${row.first_name}`,
+        details: nextIsActive ? 'Set patient active.' : 'Set patient inactive.',
+      })
     } catch (updateError) {
       // Rollback optimistic state if the database update failed.
       setRecords((prev) =>

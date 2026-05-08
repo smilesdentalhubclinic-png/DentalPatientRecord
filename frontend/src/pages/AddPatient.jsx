@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
+import { recordSystemAudit } from '../utils/auditLog'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 import { findExistingPatientRecord, isPatientDuplicateError } from '../utils/patientDuplicateCheck'
 
-const STEPS = ['Patient Information', 'Medical History', 'Dental History', 'Authorization']
+const STEPS = ['Patient Information', 'Medical History', 'Dental History', 'Review', 'Authorization']
 const SEX_OPTIONS = ['Male', 'Female']
 const CIVIL_STATUS_OPTIONS = ['Single', 'Married', 'Widowed', 'Divorced', 'Separated']
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
+const NOT_AVAILABLE_EMAIL_PATTERN = /^n\/a$/i
 
 const MEDICAL_QUESTIONS = [
   { text: 'Are you in a good health?' },
@@ -226,6 +229,11 @@ const formatPhilippineE164 = (value = '') => {
   return digits ? `+63${digits}` : null
 }
 
+const normalizePatientEmail = (value = '') => `${value}`.trim()
+const isNotAvailableEmail = (value = '') => NOT_AVAILABLE_EMAIL_PATTERN.test(normalizePatientEmail(value))
+const isValidPatientEmail = (value = '') => EMAIL_PATTERN.test(normalizePatientEmail(value))
+const isAllowedPatientEmail = (value = '') => isValidPatientEmail(value) || isNotAvailableEmail(value)
+
 const normalizeObject = (value, fallback) => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...fallback }
   return { ...fallback, ...value }
@@ -306,10 +314,16 @@ function AddPatient() {
   const [dentalAnswers, setDentalAnswers] = useState({})
   const [dentalNotes, setDentalNotes] = useState({})
   const [authorizationAccepted, setAuthorizationAccepted] = useState(false)
-  const [isSubmitConfirmOpen, setIsSubmitConfirmOpen] = useState(false)
   const [isSubmitSuccessOpen, setIsSubmitSuccessOpen] = useState(false)
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isEmailVerificationOpen, setIsEmailVerificationOpen] = useState(false)
+  const [emailVerificationCode, setEmailVerificationCode] = useState('')
+  const [emailVerificationError, setEmailVerificationError] = useState('')
+  const [emailVerificationInfo, setEmailVerificationInfo] = useState('')
+  const [isSendingVerificationCode, setIsSendingVerificationCode] = useState(false)
+  const [isResendingVerificationCode, setIsResendingVerificationCode] = useState(false)
+  const [isVerifyingEmailCode, setIsVerifyingEmailCode] = useState(false)
   const [validationMessage, setValidationMessage] = useState('')
   const [allergenInfo, setAllergenInfo] = useState(INITIAL_ALLERGEN_INFO)
   const [patientInfo, setPatientInfo] = useState(INITIAL_PATIENT_INFO)
@@ -442,6 +456,12 @@ function AddPatient() {
     clearPatientFieldError(field)
   }
 
+  const getResolvedPatientEmail = () => {
+    const normalized = normalizePatientEmail(patientInfo.email)
+    if (!normalized || isNotAvailableEmail(normalized)) return null
+    return normalized.toLowerCase()
+  }
+
   const validatePatientInformationStep = () => {
     const requiredFields = [
       'lastName',
@@ -449,6 +469,7 @@ function AddPatient() {
       'birthdate',
       'sex',
       'age',
+      'email',
       'civilStatus',
       'currentAddress',
       'mobileNumber',
@@ -469,6 +490,7 @@ function AddPatient() {
     const hasInvalidMiddleName = !isValidLetterName(patientInfo.middleName, { allowEmpty: true })
     const hasInvalidOccupation = !isValidLetterName(patientInfo.occupation)
     const hasInvalidGuardianOccupation = isMinor && !isValidLetterName(patientInfo.guardianOccupation)
+    const hasInvalidEmail = !isAllowedPatientEmail(patientInfo.email)
 
     if (hasInvalidMobile) nextInvalidFields.mobileNumber = true
     if (hasInvalidGuardianMobile) nextInvalidFields.guardianMobileNumber = true
@@ -478,6 +500,7 @@ function AddPatient() {
     if (hasInvalidMiddleName) nextInvalidFields.middleName = true
     if (hasInvalidOccupation) nextInvalidFields.occupation = true
     if (hasInvalidGuardianOccupation) nextInvalidFields.guardianOccupation = true
+    if (hasInvalidEmail) nextInvalidFields.email = true
     setInvalidPatientFields(nextInvalidFields)
 
     if (hasMissingRequiredField) {
@@ -487,6 +510,11 @@ function AddPatient() {
 
     if (hasInvalidMobile) {
       setValidationMessage('Mobile number must be a valid Philippine number after +63, like 9762911478.')
+      return false
+    }
+
+    if (hasInvalidEmail) {
+      setValidationMessage("Email address must be a valid email or exactly 'N/A'.")
       return false
     }
 
@@ -629,8 +657,12 @@ function AddPatient() {
       setValidationMessage('Please read and accept the authorization before submitting.')
       return
     }
+    if (!getResolvedPatientEmail()) {
+      setValidationMessage("A real patient email address is required to send the verification code. Replace 'N/A' with the patient's email to continue.")
+      return
+    }
     setInvalidAuthorization(false)
-    setIsSubmitConfirmOpen(true)
+    void handleStartPatientEmailVerification()
   }
   const openDatePicker = (event) => {
     event.currentTarget.showPicker?.()
@@ -693,6 +725,152 @@ function AddPatient() {
 
   const formatLetterNameInput = (value) => toTitleCase(sanitizeLetterNameInput(value))
 
+  const formatAnswerWithNote = (answer, note) => {
+    const normalizedAnswer = `${answer || ''}`.trim() || '-'
+    const normalizedNote = `${note || ''}`.trim()
+    return normalizedAnswer === 'YES' && normalizedNote ? `${normalizedAnswer} - ${normalizedNote}` : normalizedAnswer
+  }
+
+  const renderQuestionPreviewRows = (questions, answers, notes) => (
+    <div className="preview-question-list">
+      {questions.map((item, index) => (
+        <div key={`${item.text}-${index}`} className="preview-question-row">
+          <span>{item.text}</span>
+          <strong>{formatAnswerWithNote(answers[index], notes[index])}</strong>
+        </div>
+      ))}
+    </div>
+  )
+
+  const getCheckedConditionsSummary = () => {
+    const selected = CHECKBOX_CONDITIONS.filter((condition) => checkedConditions[condition] && condition !== 'Others')
+    if (checkedConditions.Others && `${checkedConditionsOtherText || ''}`.trim()) {
+      selected.push(`Others: ${checkedConditionsOtherText.trim()}`)
+    }
+    return selected.length > 0 ? selected.join(', ') : 'None selected'
+  }
+
+  const getAllergenSummary = () => {
+    const selected = Object.entries(ALLERGEN_FIELD_MAP)
+      .filter(([, key]) => Boolean(allergenInfo[key]))
+      .map(([label]) => label)
+    if (allergenInfo.others && `${allergenInfo.othersText || ''}`.trim()) {
+      selected.push(`Others: ${allergenInfo.othersText.trim()}`)
+    }
+    return selected.length > 0 ? selected.join(', ') : 'None selected'
+  }
+
+  const getDisplayValue = (value, fallback = 'N/A') => `${value || ''}`.trim() || fallback
+
+  const getAccessToken = async () => {
+    const { data, error } = await supabase.auth.getSession()
+    if (error) throw error
+    const accessToken = data?.session?.access_token || ''
+    if (!accessToken) throw new Error('Unable to verify your session. Please log in again.')
+    return accessToken
+  }
+
+  const requestPatientVerificationCode = async ({ isResend = false } = {}) => {
+    const resolvedEmail = getResolvedPatientEmail()
+    if (!resolvedEmail) {
+      throw new Error("A real patient email address is required to send the verification code. Replace 'N/A' with the patient's email to continue.")
+    }
+
+    const accessToken = await getAccessToken()
+    const response = await fetch('/api/auth/request-patient-registration-code', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ email: resolvedEmail }),
+    })
+    const payload = await response.json().catch(() => ({}))
+
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Unable to send verification code.')
+    }
+
+    setEmailVerificationError('')
+    setEmailVerificationInfo(
+      isResend
+        ? `A new verification code was sent to ${payload?.email || resolvedEmail}.`
+        : `Verification code sent to ${payload?.email || resolvedEmail}.`,
+    )
+  }
+
+  const handleStartPatientEmailVerification = async () => {
+    setIsEmailVerificationOpen(true)
+    setEmailVerificationCode('')
+    setEmailVerificationError('')
+    setEmailVerificationInfo('')
+    setIsSendingVerificationCode(true)
+    try {
+      await requestPatientVerificationCode()
+    } catch (error) {
+      setEmailVerificationError(error?.message || 'Unable to send verification code.')
+    } finally {
+      setIsSendingVerificationCode(false)
+    }
+  }
+
+  const handleResendPatientVerificationCode = async () => {
+    setIsResendingVerificationCode(true)
+    try {
+      await requestPatientVerificationCode({ isResend: true })
+    } catch (error) {
+      setEmailVerificationError(error?.message || 'Unable to resend verification code.')
+    } finally {
+      setIsResendingVerificationCode(false)
+    }
+  }
+
+  const handleVerifyPatientEmailCode = async () => {
+    const resolvedEmail = getResolvedPatientEmail()
+    const trimmedCode = `${emailVerificationCode || ''}`.trim()
+
+    if (!resolvedEmail) {
+      setEmailVerificationError("A real patient email address is required to send the verification code. Replace 'N/A' with the patient's email to continue.")
+      return
+    }
+    if (!/^\d{6}$/.test(trimmedCode)) {
+      setEmailVerificationError('Enter the 6-digit verification code sent to the patient email.')
+      return
+    }
+
+    setIsVerifyingEmailCode(true)
+    try {
+      const accessToken = await getAccessToken()
+      const response = await fetch('/api/auth/verify-patient-registration-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          email: resolvedEmail,
+          code: trimmedCode,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+
+      if (!response.ok) {
+        setEmailVerificationError(payload?.error || 'Unable to verify code.')
+        return
+      }
+
+      setIsEmailVerificationOpen(false)
+      setEmailVerificationCode('')
+      setEmailVerificationError('')
+      setEmailVerificationInfo('')
+      await confirmSubmission()
+    } catch (error) {
+      setEmailVerificationError(error?.message || 'Unable to verify code.')
+    } finally {
+      setIsVerifyingEmailCode(false)
+    }
+  }
+
   const confirmSubmission = async () => {
     if (!validatePatientInformationStep()) return
     setIsSubmitting(true)
@@ -710,7 +888,7 @@ function AddPatient() {
       sex: normalizeSex(patientInfo.sex),
       birth_date: patientInfo.birthdate || null,
       phone: formatPhilippineE164(patientInfo.mobileNumber),
-      email: patientInfo.email.trim() || null,
+      email: getResolvedPatientEmail(),
       address: toTitleCase(patientInfo.currentAddress.trim()) || null,
       nickname: toTitleCase(patientInfo.nickname.trim()) || null,
       civil_status: normalizeCivilStatus(patientInfo.civilStatus),
@@ -811,7 +989,6 @@ function AddPatient() {
           sex: true,
           age: true,
         }))
-        setIsSubmitConfirmOpen(false)
         setValidationMessage(
           `Existing record found (${formatPatientCode(duplicatePatient.patient_code, duplicatePatient.id)} - ${duplicatePatient.last_name}, ${duplicatePatient.first_name}).`,
         )
@@ -828,8 +1005,15 @@ function AddPatient() {
 
       if (logError) throw logError
 
+      await recordSystemAudit({
+        action: 'patient_created',
+        entityType: 'patient',
+        entityId: insertedPatient.id,
+        entityLabel: `${toTitleCase(patientInfo.lastName.trim())}, ${toTitleCase(patientInfo.firstName.trim())}`,
+        details: 'Created patient via Add Patient form.',
+      })
+
       sessionStorage.removeItem(ADD_PATIENT_DRAFT_KEY)
-      setIsSubmitConfirmOpen(false)
       setIsSubmitSuccessOpen(true)
     } catch (submitError) {
       const fallback = 'Unable to save patient record.'
@@ -864,9 +1048,15 @@ function AddPatient() {
     setInvalidDentalNotes({})
     setInvalidAuthorization(false)
     setValidationMessage('')
-    setIsSubmitConfirmOpen(false)
     setIsSubmitSuccessOpen(false)
     setIsClearConfirmOpen(false)
+    setIsEmailVerificationOpen(false)
+    setEmailVerificationCode('')
+    setEmailVerificationError('')
+    setEmailVerificationInfo('')
+    setIsSendingVerificationCode(false)
+    setIsResendingVerificationCode(false)
+    setIsVerifyingEmailCode(false)
     sessionStorage.removeItem(ADD_PATIENT_DRAFT_KEY)
   }
   const handleSuccessAcknowledge = () => {
@@ -880,7 +1070,7 @@ function AddPatient() {
         <h1>Add Patient Record</h1>
       </header>
 
-      <section className={`panel tabs-panel add-patient-prototype ${activeStep === 3 ? 'authorization-step-active' : ''}`}>
+      <section className={`panel tabs-panel add-patient-prototype ${activeStep === 4 ? 'authorization-step-active' : ''}`}>
         <div className="panel-tabs add-patient-tabs">
           {STEPS.map((step, index) => (
             <button
@@ -988,8 +1178,15 @@ function AddPatient() {
                 <input type="text" value={patientInfo.nickname} onChange={(e) => setPatientInfo((p) => ({ ...p, nickname: toTitleCase(e.target.value) }))} />
               </label>
               <label className="patient-span-5">
-                Email Address
-                <input type="text" value={patientInfo.email} onChange={(e) => setPatientInfo((p) => ({ ...p, email: e.target.value }))} />
+                <span className="required-label">Email Address<span className="required-asterisk">*</span></span>
+                <input
+                  className={invalidPatientFields.email ? 'input-error' : ''}
+                  type="text"
+                  required
+                  placeholder="patient@email.com or N/A"
+                  value={patientInfo.email}
+                  onChange={(e) => setPatientField('email', e.target.value)}
+                />
               </label>
               <label className="patient-span-3">
                 <span className="required-label">Civil Status<span className="required-asterisk">*</span></span>
@@ -1255,6 +1452,79 @@ function AddPatient() {
         ) : null}
 
         {activeStep === 3 ? (
+          <section className="preview-wrapper">
+            <div className="preview-shell">
+              <div className="preview-head">
+                <span className="preview-kicker">Review First</span>
+                <h2>Preview Patient Details</h2>
+                <p>Review everything encoded before proceeding to authorization and email verification.</p>
+              </div>
+
+              <div className="preview-grid">
+                <article className="preview-card">
+                  <h3>Patient Information</h3>
+                  <div className="preview-detail-grid">
+                    <p><strong>Last Name</strong><span>{getDisplayValue(patientInfo.lastName)}</span></p>
+                    <p><strong>First Name</strong><span>{getDisplayValue(patientInfo.firstName)}</span></p>
+                    <p><strong>Middle Name</strong><span>{getDisplayValue(patientInfo.middleName)}</span></p>
+                    <p><strong>Suffix</strong><span>{getDisplayValue(patientInfo.suffix)}</span></p>
+                    <p><strong>Birthdate</strong><span>{getDisplayValue(formatBirthdateLongDisplay(patientInfo.birthdate))}</span></p>
+                    <p><strong>Age</strong><span>{getDisplayValue(patientInfo.age)}</span></p>
+                    <p><strong>Sex</strong><span>{getDisplayValue(patientInfo.sex)}</span></p>
+                    <p><strong>Nickname</strong><span>{getDisplayValue(patientInfo.nickname)}</span></p>
+                    <p><strong>Email</strong><span>{getDisplayValue(patientInfo.email)}</span></p>
+                    <p><strong>Civil Status</strong><span>{getDisplayValue(patientInfo.civilStatus)}</span></p>
+                    <p><strong>Mobile Number</strong><span>{getDisplayValue(formatPhilippineE164(patientInfo.mobileNumber) || '')}</span></p>
+                    <p><strong>Occupation</strong><span>{getDisplayValue(patientInfo.occupation)}</span></p>
+                    <p className="preview-span-2"><strong>Current Address</strong><span>{getDisplayValue(patientInfo.currentAddress)}</span></p>
+                    <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(patientInfo.officeAddress)}</span></p>
+                  </div>
+                  {isMinor ? (
+                    <div className="preview-subsection">
+                      <h4>Guardian Details</h4>
+                      <div className="preview-detail-grid">
+                        <p><strong>Name</strong><span>{getDisplayValue(patientInfo.guardianName)}</span></p>
+                        <p><strong>Mobile</strong><span>{getDisplayValue(formatPhilippineE164(patientInfo.guardianMobileNumber) || '')}</span></p>
+                        <p><strong>Occupation</strong><span>{getDisplayValue(patientInfo.guardianOccupation)}</span></p>
+                        <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(patientInfo.guardianOfficeAddress)}</span></p>
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+
+                <article className="preview-card">
+                  <h3>Medical History</h3>
+                  <div className="preview-detail-grid">
+                    <p><strong>Physician</strong><span>{getDisplayValue(medicalDetails.physicianName)}</span></p>
+                    <p><strong>Specialty</strong><span>{getDisplayValue(medicalDetails.specialty)}</span></p>
+                    <p className="preview-span-2"><strong>Address</strong><span>{getDisplayValue(medicalDetails.address)}</span></p>
+                    <p className="preview-span-2"><strong>Allergens</strong><span>{getAllergenSummary()}</span></p>
+                    <p className="preview-span-2"><strong>Health Conditions</strong><span>{getCheckedConditionsSummary()}</span></p>
+                  </div>
+                  <div className="preview-subsection">
+                    <h4>Questionnaire Answers</h4>
+                    {renderQuestionPreviewRows(MEDICAL_QUESTIONS, medicalAnswers, medicalNotes)}
+                  </div>
+                </article>
+
+                <article className="preview-card">
+                  <h3>Dental History</h3>
+                  <div className="preview-detail-grid">
+                    <p><strong>Previous Dentist</strong><span>{getDisplayValue(dentalDetails.previousDentist)}</span></p>
+                    <p><strong>Last Exam Date</strong><span>{getDisplayValue(dentalDetails.lastExamDate)}</span></p>
+                    <p className="preview-span-2"><strong>Consultation Reason</strong><span>{getDisplayValue(dentalDetails.consultationReason)}</span></p>
+                  </div>
+                  <div className="preview-subsection">
+                    <h4>Questionnaire Answers</h4>
+                    {renderQuestionPreviewRows(DENTAL_QUESTIONS, dentalAnswers, dentalNotes)}
+                  </div>
+                </article>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {activeStep === 4 ? (
           <section className="authorization-wrap">
             <div className="authorization-card">
               <div className="authorization-card-head">
@@ -1323,19 +1593,60 @@ function AddPatient() {
         </div>
       </section>
 
-      {isSubmitConfirmOpen ? (
+      {isEmailVerificationOpen ? (
         <>
-          <div className="modal-backdrop" onClick={() => setIsSubmitConfirmOpen(false)} />
-          <div className="pr-modal add-patient-feedback-modal" role="dialog" aria-modal="true" aria-labelledby="add-patient-confirm-title">
+          <div className="modal-backdrop" onClick={() => {
+            if (!isSendingVerificationCode && !isResendingVerificationCode && !isVerifyingEmailCode) {
+              setIsEmailVerificationOpen(false)
+            }
+          }} />
+          <div className="pr-modal add-patient-feedback-modal" role="dialog" aria-modal="true" aria-labelledby="add-patient-verify-title">
             <div className="pr-modal-head">
-              <h2 id="add-patient-confirm-title">Confirm Submission</h2>
+              <h2 id="add-patient-verify-title">Verify Patient Email</h2>
             </div>
             <div className="pr-modal-body add-patient-feedback-body">
-              <p>Are you sure you want to submit this patient record?</p>
+              <p>Enter the 6-digit verification code sent to the patient email before this record is saved.</p>
+              <label className="verification-code-field">
+                Verification Code
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="123456"
+                  value={emailVerificationCode}
+                  onChange={(event) => {
+                    setEmailVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))
+                    setEmailVerificationError('')
+                  }}
+                  disabled={isSendingVerificationCode || isResendingVerificationCode || isVerifyingEmailCode}
+                />
+              </label>
+              {emailVerificationInfo ? <p className="verification-status verification-status-info">{emailVerificationInfo}</p> : null}
+              {emailVerificationError ? <p className="verification-status verification-status-error">{emailVerificationError}</p> : null}
               <div className="modal-actions center">
-                <button type="button" className="danger-btn" onClick={() => setIsSubmitConfirmOpen(false)}>Cancel</button>
-                <button type="button" className="success-btn" onClick={() => { void confirmSubmission() }} disabled={isSubmitting}>
-                  {isSubmitting ? 'Submitting...' : 'Submit'}
+                <button
+                  type="button"
+                  className="danger-btn"
+                  onClick={() => setIsEmailVerificationOpen(false)}
+                  disabled={isSendingVerificationCode || isResendingVerificationCode || isVerifyingEmailCode}
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => { void handleResendPatientVerificationCode() }}
+                  disabled={isSendingVerificationCode || isResendingVerificationCode || isVerifyingEmailCode}
+                >
+                  {isSendingVerificationCode || isResendingVerificationCode ? 'Resending...' : 'Resend Code'}
+                </button>
+                <button
+                  type="button"
+                  className="success-btn"
+                  onClick={() => { void handleVerifyPatientEmailCode() }}
+                  disabled={isSendingVerificationCode || isResendingVerificationCode || isVerifyingEmailCode || isSubmitting}
+                >
+                  {isSendingVerificationCode ? 'Sending...' : isVerifyingEmailCode || isSubmitting ? 'Verifying...' : 'Verify Code'}
                 </button>
               </div>
             </div>

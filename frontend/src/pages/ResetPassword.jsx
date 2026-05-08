@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import ErrorModal from '../components/ErrorModal'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabaseClient'
+import { recordSystemAudit } from '../utils/auditLog'
 
 function ResetPassword() {
   const [password, setPassword] = useState('')
@@ -110,6 +111,15 @@ function ResetPassword() {
       setSubmitting(false)
       return
     }
+
+    const { data: userData } = await supabase.auth.getUser()
+    await recordSystemAudit({
+      action: 'password_reset_completed',
+      entityType: 'auth_password',
+      entityId: userData?.user?.id || null,
+      entityLabel: userData?.user?.email || 'Password reset user',
+      details: 'Password reset completed from recovery page.',
+    })
 
     await supabase.auth.signOut()
     setSuccess('Password updated successfully. You can now log in.')

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
+import { recordSystemAudit } from '../utils/auditLog'
 
 const formatPrice = (value) => Number(value || 0).toLocaleString('en-PH', {
   minimumFractionDigits: 2,
@@ -229,6 +230,13 @@ function Procedures({ currentProfile }) {
 
     setAddServiceName('')
     setAddServicePrice('')
+    await recordSystemAudit({
+      action: 'service_created',
+      entityType: 'service_catalog',
+      entityLabel: serviceName,
+      details: `Created service "${serviceName}".`,
+      metadata: { price },
+    })
     await loadData()
     showSuccess('Added successfully')
   }
@@ -266,6 +274,13 @@ function Procedures({ currentProfile }) {
 
     setAddConditionName('')
     setAddLegendCode('')
+    await recordSystemAudit({
+      action: 'tooth_condition_created',
+      entityType: 'tooth_condition',
+      entityLabel: `${normalizedCode} - ${normalizedCondition}`,
+      details: `Created tooth condition "${normalizedCondition}".`,
+      metadata: { code: normalizedCode },
+    })
     await loadData()
     showSuccess('Added successfully')
   }
@@ -355,6 +370,13 @@ function Procedures({ currentProfile }) {
     }
 
     await loadData()
+    await recordSystemAudit({
+      action: tab === 'services' ? 'service_updated' : 'tooth_condition_updated',
+      entityType: tab === 'services' ? 'service_catalog' : 'tooth_condition',
+      entityId: selectedItem.id,
+      entityLabel: tab === 'services' ? editServiceName : `${editLegendCode} - ${editCondition}`,
+      details: tab === 'services' ? 'Updated service catalog entry.' : 'Updated dental chart legend entry.',
+    })
     closeModal()
     showSuccess('Updated successfully')
   }
@@ -389,6 +411,13 @@ function Procedures({ currentProfile }) {
     }
 
     await loadData()
+    await recordSystemAudit({
+      action: tab === 'services' ? 'service_archived' : 'tooth_condition_archived',
+      entityType: tab === 'services' ? 'service_catalog' : 'tooth_condition',
+      entityId: selectedItem.id,
+      entityLabel: tab === 'services' ? selectedItem.service_name : `${selectedItem.code} - ${selectedItem.condition_name}`,
+      details: tab === 'services' ? 'Archived service catalog entry.' : 'Archived dental chart legend entry.',
+    })
     closeModal()
     showSuccess('Archived successfully')
   }

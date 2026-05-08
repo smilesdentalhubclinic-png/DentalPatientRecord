@@ -6,6 +6,7 @@ import SortDirectionIcon from '../components/SortDirectionIcon'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
+import { recordSystemAudit } from '../utils/auditLog'
 
 const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
@@ -42,6 +43,18 @@ const formatDateOnly = (value) => {
   })
 }
 
+const formatDateTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const dateLabel = `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
+  const timeLabel = date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+  return `${dateLabel} ${timeLabel}`
+}
+
 const calculateAge = (birthDate) => {
   if (!birthDate) return '-'
   const dob = new Date(birthDate)
@@ -76,6 +89,8 @@ const formatStaffCode = (userId) => {
   const tail = alphanumerics.slice(-6).toUpperCase()
   return `ST-${tail.padStart(6, '0')}`
 }
+
+const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(`${value ?? ''}`.trim())
 
 const patientCodeNumber = (row) => {
   const code = formatPatientCode(row.patient_code, row.id)
@@ -226,6 +241,120 @@ const formatStaffDisplayName = (profile) => {
   ].filter(Boolean).join(' ') || normalized
 }
 
+const formatPatientDisplayName = (patient) => {
+  const lastName = `${patient?.last_name ?? ''}`.trim()
+  const firstName = `${patient?.first_name ?? ''}`.trim()
+  if (lastName || firstName) return [lastName ? `${lastName},` : '', firstName].filter(Boolean).join(' ')
+  return '-'
+}
+
+const formatAuditActionLabel = (action) => (
+  `${action ?? ''}`
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase())
+    .trim() || '-'
+)
+
+const AUDIT_CATEGORY_OPTIONS = [
+  { value: 'all', label: 'All' },
+  { value: 'access', label: 'Access' },
+  { value: 'patients', label: 'Patients' },
+  { value: 'users', label: 'Users' },
+  { value: 'archive', label: 'Archive' },
+  { value: 'documents', label: 'Documents' },
+  { value: 'system', label: 'System' },
+]
+
+const stringIncludesAny = (value, terms) => terms.some((term) => value.includes(term))
+
+const getAuditCategoryKey = (row) => {
+  const haystack = [
+    row.action,
+    row.source,
+    row.subject,
+    row.details,
+  ].join(' ').toLowerCase()
+
+  if (stringIncludesAny(haystack, ['login', 'logout', 'password', 'email change', 'verification', 'verify', 'reset', 'access'])) {
+    return 'access'
+  }
+
+  if (stringIncludesAny(haystack, ['document', 'upload', 'import', 'file', 'csv'])) {
+    return 'documents'
+  }
+
+  if (stringIncludesAny(haystack, ['archive', 'retrieve', 'inactive', 'active'])) {
+    return 'archive'
+  }
+
+  if (stringIncludesAny(haystack, ['staff', 'user', 'profile', 'admin', 'onboarding'])) {
+    return 'users'
+  }
+
+  if (stringIncludesAny(haystack, ['patient', 'service', 'dental', 'registration', 'record', 'tooth'])) {
+    return 'patients'
+  }
+
+  return 'system'
+}
+
+const getAuditAccentClass = (categoryKey) => {
+  switch (categoryKey) {
+    case 'access':
+      return 'access'
+    case 'patients':
+      return 'patients'
+    case 'users':
+      return 'users'
+    case 'archive':
+      return 'archive'
+    case 'documents':
+      return 'documents'
+    default:
+      return 'system'
+  }
+}
+
+const getAuditCategoryInitial = (categoryKey) => {
+  switch (categoryKey) {
+    case 'access':
+      return 'A'
+    case 'patients':
+      return 'P'
+    case 'users':
+      return 'U'
+    case 'archive':
+      return 'R'
+    case 'documents':
+      return 'D'
+    default:
+      return 'S'
+  }
+}
+
+const isSystemAuditEvent = (row) => {
+  const haystack = `${row.source || ''} ${row.actorName || ''}`.toLowerCase()
+  return haystack.includes('api') || haystack.includes('system') || row.actorName === '-'
+}
+
+const isSensitiveAuditEvent = (row) => {
+  const haystack = [
+    row.action,
+    row.source,
+    row.subject,
+    row.details,
+  ].join(' ').toLowerCase()
+
+  return stringIncludesAny(haystack, ['failed', 'password', 'email change', 'archive', 'inactive', 'reset', 'verify'])
+}
+
+const isAuditRowWithinDays = (row, days) => {
+  const timestamp = new Date(row.timestamp).getTime()
+  if (Number.isNaN(timestamp)) return false
+  const now = Date.now()
+  return timestamp >= (now - (days * 24 * 60 * 60 * 1000))
+}
+
 function Admin() {
   const navigate = useNavigate()
   const patientImportFileInputRef = useRef(null)
@@ -238,16 +367,20 @@ function Admin() {
   const [archiveUsers, setArchiveUsers] = useState([])
   const [archiveServices, setArchiveServices] = useState([])
   const [archiveDentalConditions, setArchiveDentalConditions] = useState([])
+  const [auditLogs, setAuditLogs] = useState([])
   const [archiveType, setArchiveType] = useState('patients')
   const [usersPage, setUsersPage] = useState(1)
   const [inactivePage, setInactivePage] = useState(1)
   const [archivePage, setArchivePage] = useState(1)
+  const [auditPage, setAuditPage] = useState(1)
   const [usersRowsPerPage, setUsersRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [inactiveRowsPerPage, setInactiveRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [archiveRowsPerPage, setArchiveRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
+  const [auditRowsPerPage, setAuditRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [usersPageInput, setUsersPageInput] = useState('1')
   const [inactivePageInput, setInactivePageInput] = useState('1')
   const [archivePageInput, setArchivePageInput] = useState('1')
+  const [auditPageInput, setAuditPageInput] = useState('1')
   const [usersSearchTerm, setUsersSearchTerm] = useState('')
   const [usersSortBy, setUsersSortBy] = useState('created')
   const [usersNameSortDirection, setUsersNameSortDirection] = useState('asc')
@@ -264,6 +397,9 @@ function Admin() {
   const [archiveNameSortDirection, setArchiveNameSortDirection] = useState('asc')
   const [archiveIdSortDirection, setArchiveIdSortDirection] = useState('desc')
   const [archiveDateSortDirection, setArchiveDateSortDirection] = useState('desc')
+  const [auditSearchTerm, setAuditSearchTerm] = useState('')
+  const [auditSortDirection, setAuditSortDirection] = useState('desc')
+  const [auditCategoryFilter, setAuditCategoryFilter] = useState('all')
   const [modal, setModal] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}modal`, null)
   const [selected, setSelected] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}selected`, null)
   const [successMessage, setSuccessMessage] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}successMessage`, '')
@@ -410,6 +546,12 @@ function Admin() {
       }
 
       setPatientImportSummary(payload?.summary || null)
+      await recordSystemAudit({
+        action: 'patient_import_completed',
+        entityType: 'patient_import',
+        entityLabel: patientImportFileName,
+        details: 'Imported patient migration CSV.',
+      })
       await loadAll()
     } catch {
       setImportError('Unable to import the migration CSV.')
@@ -455,6 +597,12 @@ function Admin() {
       }
 
       setRecordsImportSummary(payload?.summary || null)
+      await recordSystemAudit({
+        action: 'patient_records_import_completed',
+        entityType: 'patient_records_import',
+        entityLabel: recordsImportFileName,
+        details: 'Imported dental and service records CSV.',
+      })
       await loadAll()
     } catch {
       setImportError('Unable to import the dental and service records CSV.')
@@ -521,11 +669,205 @@ function Admin() {
     setArchiveDentalConditions(dentalRes.data ?? [])
   }
 
+  const fetchStaffNames = async (userIds) => {
+    const ids = [...new Set((userIds ?? []).filter((value) => isUuid(value)))]
+    if (!ids.length) return {}
+
+    let data = null
+    let fetchError = null
+
+    const rpcResult = await supabase.rpc('lookup_staff_names', { p_user_ids: ids })
+    data = rpcResult.data
+    fetchError = rpcResult.error
+
+    if (fetchError) {
+      const fallbackResult = await supabase
+        .from('staff_profiles')
+        .select('user_id, full_name')
+        .in('user_id', ids)
+
+      data = fallbackResult.data
+      fetchError = fallbackResult.error
+    }
+
+    if (fetchError) throw fetchError
+
+    return Object.fromEntries((data ?? []).map((row) => [row.user_id, row.full_name]))
+  }
+
+  const loadAuditLogs = async () => {
+    const [
+      systemAuditResult,
+      patientLogsResult,
+      archiveEventsResult,
+    ] = await Promise.all([
+      supabase
+        .from('system_audit_logs')
+        .select('id, action, source, entity_type, entity_id, entity_label, details, metadata, actor_user_id, actor_identifier, created_at')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('patient_logs')
+        .select('id, patient_id, action, details, created_by, created_at')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('archive_events')
+        .select('id, table_name, record_id, action, reason, performed_by, created_at')
+        .order('created_at', { ascending: false }),
+    ])
+
+    if (patientLogsResult.error) throw patientLogsResult.error
+    if (archiveEventsResult.error) throw archiveEventsResult.error
+
+    const systemRows = systemAuditResult.error ? [] : (systemAuditResult.data ?? [])
+    const patientLogRows = patientLogsResult.data ?? []
+    const archiveEventRows = archiveEventsResult.data ?? []
+
+    const patientIds = [...new Set([
+      ...patientLogRows.map((row) => row.patient_id).filter(Boolean),
+      ...archiveEventRows.filter((row) => row.table_name === 'patients').map((row) => row.record_id),
+    ])]
+    const serviceRecordIds = [...new Set(
+      archiveEventRows.filter((row) => row.table_name === 'service_records').map((row) => row.record_id),
+    )]
+    const dentalRecordIds = [...new Set(
+      archiveEventRows.filter((row) => row.table_name === 'dental_records').map((row) => row.record_id),
+    )]
+
+    const [
+      patientResult,
+      serviceRecordResult,
+      dentalRecordResult,
+      staffNames,
+    ] = await Promise.all([
+      patientIds.length > 0
+        ? supabase
+          .from('patients')
+          .select('id, patient_code, first_name, last_name')
+          .in('id', patientIds)
+        : Promise.resolve({ data: [], error: null }),
+      serviceRecordIds.length > 0
+        ? supabase
+          .from('service_records')
+          .select('id, patient_id')
+          .in('id', serviceRecordIds)
+        : Promise.resolve({ data: [], error: null }),
+      dentalRecordIds.length > 0
+        ? supabase
+          .from('dental_records')
+          .select('id, patient_id')
+          .in('id', dentalRecordIds)
+        : Promise.resolve({ data: [], error: null }),
+      fetchStaffNames([
+        ...systemRows.map((row) => row.actor_user_id).filter(Boolean),
+        ...patientLogRows.map((row) => row.created_by).filter(Boolean),
+        ...archiveEventRows.map((row) => row.performed_by).filter(Boolean),
+      ]),
+    ])
+
+    if (patientResult.error) throw patientResult.error
+    if (serviceRecordResult.error) throw serviceRecordResult.error
+    if (dentalRecordResult.error) throw dentalRecordResult.error
+
+    const patientMap = Object.fromEntries((patientResult.data ?? []).map((row) => [row.id, row]))
+    const serviceRecordMap = Object.fromEntries((serviceRecordResult.data ?? []).map((row) => [row.id, row]))
+    const dentalRecordMap = Object.fromEntries((dentalRecordResult.data ?? []).map((row) => [row.id, row]))
+
+    const linkedPatientIds = [...new Set([
+      ...(serviceRecordResult.data ?? []).map((row) => row.patient_id).filter(Boolean),
+      ...(dentalRecordResult.data ?? []).map((row) => row.patient_id).filter(Boolean),
+    ])]
+
+    let linkedPatientMap = {}
+    if (linkedPatientIds.length > 0) {
+      const linkedPatientsResult = await supabase
+        .from('patients')
+        .select('id, patient_code, first_name, last_name')
+        .in('id', linkedPatientIds)
+
+      if (linkedPatientsResult.error) throw linkedPatientsResult.error
+      linkedPatientMap = Object.fromEntries((linkedPatientsResult.data ?? []).map((row) => [row.id, row]))
+    }
+
+    const normalizedSystemRows = systemRows.map((row) => ({
+      id: `system-audit-${row.id}`,
+      timestamp: row.created_at,
+      source: row.source ? formatAuditActionLabel(row.source) : 'System Audit',
+      action: formatAuditActionLabel(row.action),
+      subject: row.entity_label || formatAuditActionLabel(row.entity_type),
+      actorName: staffNames[row.actor_user_id] || row.actor_identifier || '-',
+      details: row.details || '-',
+    }))
+
+    const normalizedPatientLogs = patientLogRows.map((row) => {
+      const patient = patientMap[row.patient_id]
+      const subject = patient
+        ? `${formatPatientDisplayName(patient)} (${formatPatientCode(patient.patient_code, patient.id)})`
+        : 'Patient record'
+
+      return {
+        id: `patient-log-${row.id}`,
+        timestamp: row.created_at,
+        source: 'Patient Log',
+        action: formatAuditActionLabel(row.action),
+        subject,
+        actorName: staffNames[row.created_by] || '-',
+        details: row.details || '-',
+      }
+    })
+
+    const normalizedArchiveEvents = archiveEventRows.map((row) => {
+      let subject = formatAuditActionLabel(row.table_name)
+      if (row.table_name === 'patients') {
+        const patient = patientMap[row.record_id]
+        subject = patient
+          ? `${formatPatientDisplayName(patient)} (${formatPatientCode(patient.patient_code, patient.id)})`
+          : 'Patient record'
+      } else if (row.table_name === 'service_records') {
+        const patient = linkedPatientMap[serviceRecordMap[row.record_id]?.patient_id]
+        subject = patient
+          ? `Service record for ${formatPatientDisplayName(patient)} (${formatPatientCode(patient.patient_code, patient.id)})`
+          : 'Service record'
+      } else if (row.table_name === 'dental_records') {
+        const patient = linkedPatientMap[dentalRecordMap[row.record_id]?.patient_id]
+        subject = patient
+          ? `Dental record for ${formatPatientDisplayName(patient)} (${formatPatientCode(patient.patient_code, patient.id)})`
+          : 'Dental record'
+      }
+
+      return {
+        id: `archive-event-${row.id}`,
+        timestamp: row.created_at,
+        source: 'Archive Event',
+        action: `${formatAuditActionLabel(row.action)} ${formatAuditActionLabel(row.table_name)}`.trim(),
+        subject,
+        actorName: staffNames[row.performed_by] || '-',
+        details: row.reason || '-',
+      }
+    })
+
+    const seenLegacyKeys = new Set(
+      normalizedSystemRows
+        .map((row) => `${row.timestamp}|${row.action}|${row.subject}|${row.details}`),
+    )
+
+    const mergedLegacyRows = [...normalizedPatientLogs, ...normalizedArchiveEvents].filter((row) => {
+      const key = `${row.timestamp}|${row.action}|${row.subject}|${row.details}`
+      if (seenLegacyKeys.has(key)) return false
+      seenLegacyKeys.add(key)
+      return true
+    })
+
+    setAuditLogs(
+      [...normalizedSystemRows, ...mergedLegacyRows]
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()),
+    )
+  }
+
   const loadAll = useMemo(() => async () => {
     setLoading(true)
     setError('')
     try {
-      await Promise.all([loadUsers(), loadInactivePatients(), loadArchives()])
+      await Promise.all([loadUsers(), loadInactivePatients(), loadArchives(), loadAuditLogs()])
     } catch (fetchError) {
       setError(fetchError.message)
     } finally {
@@ -730,6 +1072,13 @@ function Admin() {
       is_active: true,
     })
     await loadAll()
+    await recordSystemAudit({
+      action: 'staff_user_created',
+      entityType: 'staff_profile',
+      entityLabel: fullName,
+      details: 'Created staff user from Admin page.',
+      metadata: { username, role },
+    })
     showSuccess('Added successfully.')
   }
 
@@ -825,6 +1174,14 @@ function Admin() {
     await loadAll()
     setIsEditingUser(false)
     closeModal()
+    await recordSystemAudit({
+      action: 'staff_user_updated',
+      entityType: 'staff_profile',
+      entityId: selected.user_id,
+      entityLabel: fullName,
+      details: 'Updated staff user from Admin page.',
+      metadata: { role: userForm.role, isActive: userForm.is_active },
+    })
     showSuccess('Updated successfully')
   }
 
@@ -865,6 +1222,13 @@ function Admin() {
 
       await loadAll()
       closeModal()
+      await recordSystemAudit({
+        action: 'staff_user_archived',
+        entityType: 'staff_profile',
+        entityId: selected.user_id,
+        entityLabel: selected.full_name || selected.username,
+        details: 'Archived staff user from Admin page.',
+      })
       showSuccess('Archived successfully')
       return
     }
@@ -889,6 +1253,13 @@ function Admin() {
 
     await loadAll()
     closeModal()
+    await recordSystemAudit({
+      action: 'patient_archived',
+      entityType: 'patient',
+      entityId: selected.id,
+      entityLabel: `${selected.last_name}, ${selected.first_name}`,
+      details: 'Archived patient from Admin page.',
+    })
     showSuccess('Archived successfully')
   }
 
@@ -948,6 +1319,31 @@ function Admin() {
 
     await loadAll()
     closeModal()
+    await recordSystemAudit({
+      action: archiveType === 'patients'
+        ? 'patient_retrieved'
+        : archiveType === 'users'
+          ? 'staff_user_retrieved'
+          : archiveType === 'services'
+            ? 'service_retrieved'
+            : 'tooth_condition_retrieved',
+      entityType: archiveType === 'users'
+        ? 'staff_profile'
+        : archiveType === 'services'
+          ? 'service_catalog'
+          : archiveType === 'dentalCondition'
+            ? 'tooth_condition'
+            : 'patient',
+      entityId: archiveType === 'users' ? selected.user_id : selected.id,
+      entityLabel: archiveType === 'patients'
+        ? `${selected.last_name}, ${selected.first_name}`
+        : archiveType === 'users'
+          ? (selected.full_name || selected.username)
+          : archiveType === 'services'
+            ? selected.service_name
+            : `${selected.code} - ${selected.condition_name}`,
+      details: 'Retrieved archived record from Admin page.',
+    })
     showSuccess('Retrieved successfully')
   }
 
@@ -1170,6 +1566,39 @@ function Admin() {
     archiveSortBy,
     archiveType,
   ])
+
+  const filteredAuditLogs = useMemo(() => {
+    const query = auditSearchTerm.trim().toLowerCase()
+    const categoryRows = auditCategoryFilter === 'all'
+      ? [...auditLogs]
+      : auditLogs.filter((row) => getAuditCategoryKey(row) === auditCategoryFilter)
+
+    const rows = query
+      ? categoryRows.filter((row) => (
+        `${row.subject || ''}`.toLowerCase().includes(query)
+        || `${row.actorName || ''}`.toLowerCase().includes(query)
+        || `${row.action || ''}`.toLowerCase().includes(query)
+        || `${row.source || ''}`.toLowerCase().includes(query)
+        || `${row.details || ''}`.toLowerCase().includes(query)
+      ))
+      : categoryRows
+
+    return rows.sort((a, b) => {
+      const aTime = new Date(a.timestamp).getTime()
+      const bTime = new Date(b.timestamp).getTime()
+      return auditSortDirection === 'asc' ? aTime - bTime : bTime - aTime
+    })
+  }, [auditCategoryFilter, auditLogs, auditSearchTerm, auditSortDirection])
+
+  const auditCategoryCounts = useMemo(() => (
+    AUDIT_CATEGORY_OPTIONS.reduce((accumulator, option) => {
+      accumulator[option.value] = option.value === 'all'
+        ? auditLogs.length
+        : auditLogs.filter((row) => getAuditCategoryKey(row) === option.value).length
+      return accumulator
+    }, {})
+  ), [auditLogs])
+
   const activeAdminCount = useMemo(
     () => users.filter((user) => user.is_active && user.role === 'admin').length,
     [users],
@@ -1217,6 +1646,7 @@ function Admin() {
   const usersPaging = paginateRows(filteredUsers, usersPage, usersRowsPerPage)
   const inactivePaging = paginateRows(filteredInactivePatients, inactivePage, inactiveRowsPerPage)
   const archivePaging = paginateRows(filteredArchiveRows, archivePage, archiveRowsPerPage)
+  const auditPaging = paginateRows(filteredAuditLogs, auditPage, auditRowsPerPage)
 
   const hasUsersFilters = Boolean(usersRoleFilter || usersCreatedFromFilter || usersCreatedToFilter)
   const hasInactiveFilters = Boolean(inactiveSexFilter || inactiveMinAgeFilter || inactiveMaxAgeFilter || inactiveDateFromFilter || inactiveDateToFilter)
@@ -1439,6 +1869,9 @@ function Admin() {
           </button>
           <button type="button" className={`tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => { setTab('archive'); setShowAddUser(false); setArchivePage(1); setArchivePageInput('1') }}>
             Archive List
+          </button>
+          <button type="button" className={`tab ${tab === 'audit' ? 'active' : ''}`} onClick={() => { setTab('audit'); setShowAddUser(false); setAuditPage(1); setAuditPageInput('1') }}>
+            Audit Logs
           </button>
         </div>
 
@@ -1898,6 +2331,123 @@ function Admin() {
                 setPage: setArchivePage,
                 pageInput: archivePageInput,
                 setPageInput: setArchivePageInput,
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        {tab === 'audit' ? (
+          <div className="records audit-trail-page">
+            <div className="audit-trail-hero">
+              <div>
+                <h2>Comprehensive Audit Trail &amp; Activity Log</h2>
+                <p className="audit-trail-subtitle">Full history of user and system actions across the platform.</p>
+              </div>
+            </div>
+
+            <div className="records-header admin-records-header audit-trail-header">
+              <div>
+                <div className="records-toolbar">
+                  <div className="search-box audit-search-box">
+                    <span className="search-icon" aria-hidden />
+                    <input
+                      type="text"
+                      placeholder="Search logs by subject, actor, action, or details"
+                      value={auditSearchTerm}
+                      onChange={(event) => {
+                        setAuditSearchTerm(event.target.value)
+                        setAuditPage(1)
+                        setAuditPageInput('1')
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="records-actions">
+                <div className="sorter">
+                  <label htmlFor="admin-audit-sort">Sort by:</label>
+                  <select id="admin-audit-sort" value="timestamp" onChange={() => {}}>
+                    <option value="timestamp">Date &amp; Time</option>
+                  </select>
+                  <button
+                    type="button"
+                    className="ghost sort-direction-btn"
+                    aria-label={auditSortDirection === 'asc' ? 'Oldest to newest' : 'Newest to oldest'}
+                    title={auditSortDirection === 'asc' ? 'Oldest to newest' : 'Newest to oldest'}
+                    onClick={() => {
+                      setAuditSortDirection((previous) => (previous === 'asc' ? 'desc' : 'asc'))
+                      setAuditPage(1)
+                      setAuditPageInput('1')
+                    }}
+                  >
+                    <SortDirectionIcon direction={auditSortDirection} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="audit-filter-chips" role="tablist" aria-label="Audit categories">
+              {AUDIT_CATEGORY_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`audit-filter-chip ${auditCategoryFilter === option.value ? 'active' : ''}`}
+                  onClick={() => {
+                    setAuditCategoryFilter(option.value)
+                    setAuditPage(1)
+                    setAuditPageInput('1')
+                  }}
+                >
+                  <span>{option.label}</span>
+                  <strong>{auditCategoryCounts[option.value] ?? 0}</strong>
+                </button>
+              ))}
+            </div>
+
+            <div className="audit-feed">
+              <div className="audit-feed-list">
+                {auditPaging.pageRows.map((row) => {
+                  const categoryKey = getAuditCategoryKey(row)
+                  const accentClass = getAuditAccentClass(categoryKey)
+
+                  return (
+                    <article key={row.id} className="audit-feed-item">
+                      <div className={`audit-feed-icon ${accentClass}`} aria-hidden>{getAuditCategoryInitial(categoryKey)}</div>
+                      <div className="audit-feed-content">
+                        <div className="audit-feed-title-row">
+                          <div className="audit-feed-heading">
+                            <strong>{row.actorName}</strong>
+                            <span className="audit-feed-source">{row.source}</span>
+                            <span className={`audit-feed-badge ${accentClass}`}>{categoryKey}</span>
+                          </div>
+                          <div className="audit-feed-time">
+                            <strong>{formatDateTime(row.timestamp)}</strong>
+                            <span>{row.action}</span>
+                          </div>
+                        </div>
+                        <p className="audit-feed-subject">{row.subject}</p>
+                        <p className="audit-feed-details">{row.details}</p>
+                      </div>
+                    </article>
+                  )
+                })}
+                {!loading && filteredAuditLogs.length === 0 ? (
+                  <div className="audit-feed-empty">
+                    <strong>No audit logs found.</strong>
+                    <span>Try a different keyword or switch to another category.</span>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+            <div className="records-footer">
+              <span>Showing {auditPaging.visibleStart}-{auditPaging.visibleEnd} of {filteredAuditLogs.length} entries</span>
+              {renderPaginationControls({
+                paging: auditPaging,
+                rowsPerPage: auditRowsPerPage,
+                setRowsPerPage: setAuditRowsPerPage,
+                setPage: setAuditPage,
+                pageInput: auditPageInput,
+                setPageInput: setAuditPageInput,
               })}
             </div>
           </div>

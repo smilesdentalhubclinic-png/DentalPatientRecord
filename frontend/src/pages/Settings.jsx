@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabaseClient'
 import clinicLogo from '../assets/DENTAL LOGO.png'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
+import { recordSystemAudit } from '../utils/auditLog'
 
 const ROLE_LABELS = {
   admin: 'Admin',
@@ -341,6 +342,13 @@ function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
     onProfileChange?.(data)
     setIsEditingProfile(false)
     setIsSavingProfile(false)
+    await recordSystemAudit({
+      action: 'staff_profile_updated',
+      entityType: 'staff_profile',
+      entityId: data.user_id,
+      entityLabel: data.full_name || data.username,
+      details: 'Updated profile information in Settings.',
+    })
   }
 
   const handleEmailSubmit = async (event) => {

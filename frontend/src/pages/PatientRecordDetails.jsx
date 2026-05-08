@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 import { findExistingPatientRecord, isPatientDuplicateError } from '../utils/patientDuplicateCheck'
+import { recordSystemAudit } from '../utils/auditLog'
 
 const HEALTH = [
   'Low Blood Pressure',
@@ -1606,7 +1607,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
     const { error: logError } = await supabase.from('patient_logs').insert({ patient_id: id, action, details })
     if (logError) throw logError
-  }, [id])
+    await recordSystemAudit({
+      action,
+      entityType: 'patient_record',
+      entityId: id,
+      entityLabel: `${patient.lastName || ''}, ${patient.firstName || ''}`.trim().replace(/^, /, ''),
+      details,
+    })
+  }, [id, patient.firstName, patient.lastName])
 
   const updatePatientSection = useCallback(async (patch) => {
     if (patient.isActive === false) {
@@ -1632,6 +1640,15 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
       if (updateError) throw updateError
       if (!updatedPatient) throw new Error(INACTIVE_PATIENT_UPDATE_MESSAGE)
+
+      await recordSystemAudit({
+        action: 'patient_profile_updated',
+        entityType: 'patient',
+        entityId: id,
+        entityLabel: `${patient.lastName || ''}, ${patient.firstName || ''}`.trim().replace(/^, /, ''),
+        details: 'Updated patient profile section.',
+        metadata: { updatedFields: Object.keys(patch || {}) },
+      })
 
       setModal(null)
       await loadPatient()
@@ -2288,6 +2305,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       }
 
       await loadPatientDocuments()
+      await recordSystemAudit({
+        action: 'patient_document_archived',
+        entityType: 'patient_document',
+        entityId: documentItem.dbId || documentItem.storagePath || documentItem.fileName,
+        entityLabel: documentItem.fileName,
+        details: 'Archived patient document.',
+        metadata: { patientId: id },
+      })
       setPendingDocumentDeletion(null)
     } catch (deleteError) {
       setError(normalizeError(deleteError, 'Unable to delete document.'))
@@ -2371,6 +2396,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       }
 
       await loadPatientDocuments()
+      await recordSystemAudit({
+        action: 'patient_document_uploaded',
+        entityType: 'patient_document',
+        entityId: storagePath,
+        entityLabel: file.name,
+        details: 'Uploaded patient document.',
+        metadata: { patientId: id },
+      })
     } catch (uploadError) {
       const uploadMessage = normalizeError(uploadError, 'Unable to upload document.')
       if (/maximum allowed size|object exceeded the maximum allowed size/i.test(uploadMessage)) {

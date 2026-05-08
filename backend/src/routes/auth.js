@@ -12,10 +12,12 @@ const {
   isSmtpConfigured,
   sendEmailChangeVerificationEmail,
   sendFailedLoginAlertEmail,
+  sendPatientRegistrationVerificationEmail,
   sendPasswordResetVerificationEmail,
   sendStaffOnboardingVerificationEmail,
   sendWelcomeTestEmail,
 } = require('../lib/mailer');
+const { writeSystemAuditLog } = require('../lib/audit');
 
 const router = express.Router();
 const failedLoginAlertStore = new Map();
@@ -27,6 +29,7 @@ const FAILED_LOGIN_ALERT_THRESHOLD = 4;
 const FAILED_LOGIN_TRACKING_WINDOW_MS = 30 * 60 * 1000;
 const VERIFICATION_PURPOSE = Object.freeze({
   EMAIL_CHANGE: 'email_change',
+  PATIENT_REGISTRATION: 'patient_registration',
   STAFF_ONBOARDING: 'staff_onboarding',
   PASSWORD_RESET: 'password_reset',
 });
@@ -457,6 +460,13 @@ router.post('/login', async (req, res) => {
 
     const resolvedEmail = await resolveLoginEmail(login);
     if (!resolvedEmail) {
+      await writeSystemAuditLog({
+        action: 'login_failed',
+        entityType: 'auth_session',
+        entityLabel: login,
+        details: 'Invalid username/email or password.',
+        actorIdentifier: login,
+      });
       return res.status(401).json({ error: 'Invalid username/email or password.' });
     }
 
@@ -467,6 +477,13 @@ router.post('/login', async (req, res) => {
     });
 
     if (error) {
+      await writeSystemAuditLog({
+        action: 'login_failed',
+        entityType: 'auth_session',
+        entityLabel: resolvedEmail,
+        details: error.message || 'Login failed.',
+        actorIdentifier: resolvedEmail,
+      });
       if (/invalid login credentials|invalid credentials|email not confirmed|invalid grant/i.test(error.message || '')) {
         try {
           await recordFailedLoginAttempt(resolvedEmail);
@@ -484,6 +501,16 @@ router.post('/login', async (req, res) => {
     const sessionAccessToken = data.session?.access_token || '';
     const { userId, sessionId } = getSessionClaims(sessionAccessToken);
     await setActiveStaffSession(serviceClient, userId || data.user?.id, sessionId);
+    await writeSystemAuditLog({
+      action: 'login',
+      entityType: 'auth_session',
+      entityId: sessionId || null,
+      entityLabel: resolvedEmail,
+      details: 'User logged in successfully.',
+      actorUserId: userId || data.user?.id || null,
+      actorIdentifier: resolvedEmail,
+      metadata: { sessionId: sessionId || null },
+    });
 
     return res.json({
       message: 'Login successful.',
@@ -538,6 +565,14 @@ router.post('/forgot-password', async (req, res) => {
       toEmail: resolvedEmail,
       code,
       expiresInMinutes: Math.round(PASSWORD_RESET_CODE_EXPIRY_MS / 60000),
+    });
+    await writeSystemAuditLog({
+      action: 'password_reset_requested',
+      entityType: 'auth_password',
+      entityLabel: resolvedEmail,
+      details: 'Password reset verification code requested.',
+      actorUserId: existingAuthUser.id,
+      actorIdentifier: resolvedEmail,
     });
 
     return res.json({
@@ -697,6 +732,16 @@ router.post('/update-password', requireAccessToken, async (req, res) => {
     });
     if (metadataUpdateError) return sendSupabaseError(res, metadataUpdateError, 500);
 
+    await writeSystemAuditLog({
+      action: 'password_updated',
+      entityType: 'auth_password',
+      entityId: currentUserData.user.id,
+      entityLabel: currentUserData.user.email || currentUserData.user.id,
+      details: 'Password updated from authenticated settings flow.',
+      actorUserId: currentUserData.user.id,
+      actorIdentifier: currentUserData.user.email || '',
+    });
+
     return res.json({
       message: 'Password updated successfully.',
       passwordUpdatedAt,
@@ -779,6 +824,16 @@ router.post('/complete-forgot-password', async (req, res) => {
     await deleteVerificationRecord({
       purpose: VERIFICATION_PURPOSE.PASSWORD_RESET,
       email: resolvedEmail,
+    });
+
+    await writeSystemAuditLog({
+      action: 'password_reset_completed',
+      entityType: 'auth_password',
+      entityId: storedVerification.user_id,
+      entityLabel: resolvedEmail,
+      details: 'Password reset completed successfully.',
+      actorUserId: storedVerification.user_id,
+      actorIdentifier: resolvedEmail,
     });
 
     return res.json({
@@ -888,6 +943,16 @@ router.post('/request-email-change-code', requireAccessToken, async (req, res) =
       requestedBy: requesterUserData.user.email || 'Smiles Dental Hub',
       expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
     });
+    await writeSystemAuditLog({
+      action: 'email_change_requested',
+      entityType: 'staff_profile',
+      entityId: requesterUserData.user.id,
+      entityLabel: nextEmail,
+      details: 'Email change verification code requested.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { nextEmail },
+    });
 
     return res.json({
       message: 'Verification code sent to email.',
@@ -959,6 +1024,17 @@ router.post('/verify-email-change-code', requireAccessToken, async (req, res) =>
     await deleteVerificationRecord({
       purpose: VERIFICATION_PURPOSE.EMAIL_CHANGE,
       userId: requesterUserData.user.id,
+    });
+
+    await writeSystemAuditLog({
+      action: 'email_changed',
+      entityType: 'staff_profile',
+      entityId: requesterUserData.user.id,
+      entityLabel: nextEmail,
+      details: 'Email changed after verification.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { nextEmail },
     });
 
     return res.json({
@@ -1042,6 +1118,16 @@ router.post('/start-staff-onboarding', requireAccessToken, async (req, res) => {
       requestedBy: requesterProfile.full_name || requesterUserData.user.email || 'Smiles Dental Hub',
       expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
     });
+    await writeSystemAuditLog({
+      action: 'staff_onboarding_requested',
+      entityType: 'staff_profile',
+      entityId: requesterUserData.user.id,
+      entityLabel: nextEmail,
+      details: 'Staff onboarding verification code requested.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { nextEmail },
+    });
 
     return res.json({
       message: 'Verification code sent to email.',
@@ -1124,8 +1210,159 @@ router.post('/verify-staff-onboarding', requireAccessToken, async (req, res) => 
       userId: requesterUserData.user.id,
     });
 
+    await writeSystemAuditLog({
+      action: 'staff_onboarding_completed',
+      entityType: 'staff_profile',
+      entityId: requesterUserData.user.id,
+      entityLabel: nextEmail,
+      details: 'Staff onboarding verified and profile completed.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: nextEmail,
+    });
+
     return res.json({
       message: 'Staff onboarding completed successfully.',
+      email: nextEmail,
+    });
+  } catch (error) {
+    return sendSupabaseError(res, error, 500);
+  }
+});
+
+router.post('/request-patient-registration-code', requireAccessToken, async (req, res) => {
+  try {
+    const nextEmail = normalizeString(req.body?.email).toLowerCase();
+    if (!nextEmail) {
+      return res.status(400).json({ error: 'email is required.' });
+    }
+    if (!EMAIL_PATTERN.test(nextEmail)) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
+    }
+    if (!isSmtpConfigured()) {
+      return res.status(500).json({ error: 'SMTP is not configured for verification emails.' });
+    }
+
+    const requesterContext = await requireAuthenticatedRequester(req.accessToken);
+    if (requesterContext.errorResponse) {
+      const { status, payload } = requesterContext.errorResponse;
+      return payload?.error ? res.status(status).json(payload) : sendSupabaseError(res, payload, status);
+    }
+
+    const { requesterUserData, requesterProfile } = requesterContext;
+    const code = createSixDigitCode();
+
+    await storeVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PATIENT_REGISTRATION,
+      userId: requesterUserData.user.id,
+      email: nextEmail,
+      code,
+      expiresInMs: EMAIL_CHANGE_CODE_EXPIRY_MS,
+    });
+
+    await sendPatientRegistrationVerificationEmail({
+      toEmail: nextEmail,
+      code,
+      requestedBy: requesterProfile.full_name || requesterUserData.user.email || 'Smiles Dental Hub',
+      expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
+    });
+    await writeSystemAuditLog({
+      action: 'patient_registration_verification_requested',
+      entityType: 'patient_registration',
+      entityLabel: nextEmail,
+      details: 'Patient registration verification code requested.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { patientEmail: nextEmail },
+    });
+
+    return res.json({
+      message: 'Verification code sent to email.',
+      email: nextEmail,
+      expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
+    });
+  } catch (error) {
+    return sendSupabaseError(res, error, 500);
+  }
+});
+
+router.post('/verify-patient-registration-code', requireAccessToken, async (req, res) => {
+  try {
+    const nextEmail = normalizeString(req.body?.email).toLowerCase();
+    const code = normalizeString(req.body?.code);
+
+    if (!nextEmail || !code) {
+      return res.status(400).json({ error: 'email and code are required.' });
+    }
+    if (!EMAIL_PATTERN.test(nextEmail)) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
+    }
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Verification code must be exactly 6 digits.' });
+    }
+
+    const requesterContext = await requireAuthenticatedRequester(req.accessToken);
+    if (requesterContext.errorResponse) {
+      const { status, payload } = requesterContext.errorResponse;
+      return payload?.error ? res.status(status).json(payload) : sendSupabaseError(res, payload, status);
+    }
+
+    const { requesterUserData } = requesterContext;
+    const storedVerification = await getVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PATIENT_REGISTRATION,
+      userId: requesterUserData.user.id,
+    });
+
+    if (!storedVerification) {
+      return res.status(400).json({ error: 'No active patient email verification request found.' });
+    }
+    if (new Date(storedVerification.expires_at).getTime() < Date.now()) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PATIENT_REGISTRATION,
+        userId: requesterUserData.user.id,
+      });
+      return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
+    }
+    if (storedVerification.email !== nextEmail) {
+      return res.status(400).json({ error: 'The email does not match the pending verification request.' });
+    }
+    if (storedVerification.attempts >= EMAIL_CHANGE_MAX_ATTEMPTS) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PATIENT_REGISTRATION,
+        userId: requesterUserData.user.id,
+      });
+      return res.status(400).json({ error: 'Too many invalid attempts. Please request a new code.' });
+    }
+    if (storedVerification.code_hash !== hashVerificationCode(code)) {
+      await incrementVerificationAttempts(storedVerification.id, storedVerification.attempts + 1);
+      return res.status(400).json({ error: 'Invalid verification code.' });
+    }
+
+    await writeSystemAuditLog({
+      action: 'password_reset_code_verified',
+      entityType: 'auth_password',
+      entityLabel: resolvedEmail,
+      details: 'Password reset verification code accepted.',
+      actorUserId: storedVerification.user_id || null,
+      actorIdentifier: resolvedEmail,
+    });
+
+    await deleteVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PATIENT_REGISTRATION,
+      userId: requesterUserData.user.id,
+    });
+
+    await writeSystemAuditLog({
+      action: 'patient_registration_verified',
+      entityType: 'patient_registration',
+      entityLabel: nextEmail,
+      details: 'Patient registration email verification completed.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { patientEmail: nextEmail },
+    });
+
+    return res.json({
+      message: 'Code verified.',
       email: nextEmail,
     });
   } catch (error) {
@@ -1180,6 +1417,17 @@ router.post('/admin-update-user-email', requireAccessToken, async (req, res) => 
       .update({ email: nextEmail })
       .eq('user_id', userId);
     if (profileUpdateError) return sendSupabaseError(res, profileUpdateError);
+
+    await writeSystemAuditLog({
+      action: 'admin_updated_user_email',
+      entityType: 'staff_profile',
+      entityId: userId,
+      entityLabel: nextEmail,
+      details: 'Admin updated a staff user email address.',
+      actorUserId: adminContext.requesterUserData?.user?.id || null,
+      actorIdentifier: adminContext.requesterProfile?.email || '',
+      metadata: { nextEmail },
+    });
 
     return res.json({ message: 'User email updated successfully.' });
   } catch (error) {
@@ -1289,6 +1537,17 @@ router.post('/admin-create-user', requireAccessToken, async (req, res) => {
       return sendSupabaseError(res, profileUpdateError);
     }
 
+    await writeSystemAuditLog({
+      action: 'admin_created_user',
+      entityType: 'staff_profile',
+      entityId: createdUserData.user.id,
+      entityLabel: fullName,
+      details: `Admin created user ${fullName}.`,
+      actorUserId: adminContext.requesterUserData?.user?.id || null,
+      actorIdentifier: adminContext.requesterProfile?.email || '',
+      metadata: { email, username, role },
+    });
+
     return res.status(201).json({
       message: 'User created successfully.',
       userId: createdUserData.user.id,
@@ -1348,11 +1607,23 @@ router.post('/logout', async (req, res) => {
 
     const { userId, sessionId } = getSessionClaims(accessToken);
     const serviceClient = createSupabaseClient({ useServiceRole: true });
+    const { data: currentUserData } = await serviceClient.auth.admin.getUserById(userId);
     await clearActiveStaffSession(serviceClient, userId, sessionId);
 
     const client = createSupabaseClient({ accessToken });
     const { error } = await client.auth.signOut();
     if (error) return sendSupabaseError(res, error);
+
+    await writeSystemAuditLog({
+      action: 'logout',
+      entityType: 'auth_session',
+      entityId: sessionId || null,
+      entityLabel: currentUserData?.user?.email || userId,
+      details: 'User logged out.',
+      actorUserId: userId,
+      actorIdentifier: currentUserData?.user?.email || '',
+      metadata: { sessionId: sessionId || null },
+    });
 
     return res.json({ message: 'Logged out.' });
   } catch (error) {
