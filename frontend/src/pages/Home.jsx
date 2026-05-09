@@ -513,12 +513,12 @@ function Home({ currentProfile }) {
 
           <div className="analytics-filter-group">
             <span className="analytics-filter-label">View Type</span>
-            <div className="analytics-pill-group">
+            <div className="analytics-pill-group analytics-pill-group-compact analytics-pill-group-view-type">
               {availableViewOptions.map((option) => (
                 <button
                   key={option.key}
                   type="button"
-                  className={`analytics-pill ${viewMode === option.key ? 'active' : ''}`}
+                  className={`analytics-pill analytics-pill-compact ${viewMode === option.key ? 'active' : ''}`}
                   onClick={() => {
                     setViewMode(option.key)
                     setHoveredKey(null)

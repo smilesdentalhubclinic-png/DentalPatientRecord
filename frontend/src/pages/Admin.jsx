@@ -255,6 +255,21 @@ const formatAuditActionLabel = (action) => (
     .trim() || '-'
 )
 
+const formatAuditSourceLabel = (source) => {
+  const normalized = `${source ?? ''}`.trim().toLowerCase()
+  if (!normalized) return 'System'
+  if (normalized === 'api') return 'System'
+  if (normalized === 'ui') return 'Web App'
+  if (normalized === 'patient log') return 'Patient Log'
+  if (normalized === 'archive event') return 'Archive History'
+  return formatAuditActionLabel(source)
+}
+
+const formatAuditActorLabel = (actorName) => {
+  const normalized = `${actorName ?? ''}`.trim()
+  return normalized && normalized !== '-' ? normalized : 'System'
+}
+
 const AUDIT_CATEGORY_OPTIONS = [
   { value: 'all', label: 'All' },
   { value: 'access', label: 'Access' },
@@ -2338,13 +2353,6 @@ function Admin() {
 
         {tab === 'audit' ? (
           <div className="records audit-trail-page">
-            <div className="audit-trail-hero">
-              <div>
-                <h2>Comprehensive Audit Trail &amp; Activity Log</h2>
-                <p className="audit-trail-subtitle">Full history of user and system actions across the platform.</p>
-              </div>
-            </div>
-
             <div className="records-header admin-records-header audit-trail-header">
               <div>
                 <div className="records-toolbar">
@@ -2364,6 +2372,25 @@ function Admin() {
                 </div>
               </div>
               <div className="records-actions">
+                <div className="sorter">
+                  <label htmlFor="admin-audit-category">Category:</label>
+                  <select
+                    id="admin-audit-category"
+                    className="audit-category-select"
+                    value={auditCategoryFilter}
+                    onChange={(event) => {
+                      setAuditCategoryFilter(event.target.value)
+                      setAuditPage(1)
+                      setAuditPageInput('1')
+                    }}
+                  >
+                    {AUDIT_CATEGORY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label} ({auditCategoryCounts[option.value] ?? 0})
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div className="sorter">
                   <label htmlFor="admin-audit-sort">Sort by:</label>
                   <select id="admin-audit-sort" value="timestamp" onChange={() => {}}>
@@ -2386,24 +2413,6 @@ function Admin() {
               </div>
             </div>
 
-            <div className="audit-filter-chips" role="tablist" aria-label="Audit categories">
-              {AUDIT_CATEGORY_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`audit-filter-chip ${auditCategoryFilter === option.value ? 'active' : ''}`}
-                  onClick={() => {
-                    setAuditCategoryFilter(option.value)
-                    setAuditPage(1)
-                    setAuditPageInput('1')
-                  }}
-                >
-                  <span>{option.label}</span>
-                  <strong>{auditCategoryCounts[option.value] ?? 0}</strong>
-                </button>
-              ))}
-            </div>
-
             <div className="audit-feed">
               <div className="audit-feed-list">
                 {auditPaging.pageRows.map((row) => {
@@ -2416,8 +2425,7 @@ function Admin() {
                       <div className="audit-feed-content">
                         <div className="audit-feed-title-row">
                           <div className="audit-feed-heading">
-                            <strong>{row.actorName}</strong>
-                            <span className="audit-feed-source">{row.source}</span>
+                            <strong>{row.details && row.details !== '-' ? row.details : row.action}</strong>
                             <span className={`audit-feed-badge ${accentClass}`}>{categoryKey}</span>
                           </div>
                           <div className="audit-feed-time">
@@ -2426,7 +2434,9 @@ function Admin() {
                           </div>
                         </div>
                         <p className="audit-feed-subject">{row.subject}</p>
-                        <p className="audit-feed-details">{row.details}</p>
+                        <p className="audit-feed-meta">
+                          By {formatAuditActorLabel(row.actorName)} • {formatAuditSourceLabel(row.source)}
+                        </p>
                       </div>
                     </article>
                   )

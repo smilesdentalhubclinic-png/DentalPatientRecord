@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import dentalChart1 from '../assets/Dental Chart 1.png'
 import dentalChart2 from '../assets/Dental Chart 2.png'
+import dentalClinicLogo from '../assets/DENTAL LOGO.png'
 import ErrorModal from '../components/ErrorModal'
 import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
@@ -2500,7 +2501,20 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   <meta charset="utf-8" />
   <title>Patient Export - ${escapeHtml(patientCode)}</title>
   <style>
-    body { font-family: Arial, sans-serif; padding: 24px; color: #1f2d35; }
+    @page { margin: 10mm 16mm 18mm; }
+    body { font-family: Arial, sans-serif; margin: 0; color: #1f2d35; }
+    .export-shell { width: 100%; border-collapse: collapse; }
+    .export-shell > thead { display: table-header-group; }
+    .export-shell > tbody { display: table-row-group; }
+    .export-shell > thead > tr > th,
+    .export-shell > tbody > tr > td { border: none; padding: 0; text-align: left; vertical-align: top; }
+    .export-page { padding: 12px 24px 24px; }
+    .export-header { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 8px 24px 12px; border-bottom: 2px solid #d5e1e8; background: #ffffff; }
+    .export-header-logo { width: 102px; height: 102px; object-fit: contain; flex: 0 0 auto; }
+    .export-header-copy { display: grid; gap: 4px; text-align: center; justify-items: center; }
+    .export-clinic-title { margin: 0; font-size: 28px; font-weight: 800; color: #0d668c; line-height: 1.05; }
+    .export-clinic-subtitle { margin: 0; font-size: 13px; color: #516772; font-weight: 700; }
+    .export-clinic-address { margin: 0; font-size: 12px; color: #516772; line-height: 1.35; }
     h1, h2, h3 { margin: 0 0 10px; }
     h1 { font-size: 24px; color: #0d668c; }
     h2 { font-size: 18px; margin-top: 26px; border-bottom: 1px solid #d5e1e8; padding-bottom: 6px; }
@@ -2523,9 +2537,34 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     .section-block { page-break-inside: avoid; }
     .small-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; font-size: 12px; }
     .small { font-size: 12px; color: #506571; margin-top: 10px; }
+    .export-certification { margin-top: 28px; page-break-inside: avoid; }
+    .export-certification p { margin: 0 0 14px; font-size: 12px; color: #3f5561; line-height: 1.55; text-align: justify; }
+    .export-signature-block { margin-top: 34px; display: grid; justify-items: end; }
+    .export-signature-line { width: 260px; border-top: 1px solid #4d6270; padding-top: 8px; text-align: center; }
+    .export-signature-name { font-size: 12px; font-weight: 700; color: #1f2d35; }
+    .export-signature-role { margin-top: 4px; font-size: 11px; color: #60727e; }
   </style>
 </head>
 <body>
+  <table class="export-shell" role="presentation">
+    <thead>
+      <tr>
+        <th>
+          <div class="export-header">
+            <img class="export-header-logo" src="${dentalClinicLogo}" alt="Smiles Dental Hub logo" />
+            <div class="export-header-copy">
+              <p class="export-clinic-title">Smiles Dental Hub</p>
+              <p class="export-clinic-subtitle">Dr. Jowela Elaine E. Roxas</p>
+              <p class="export-clinic-address">#147 Malipampang, San Ildefonso, Bulacan</p>
+            </div>
+          </div>
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <div class="export-page">
   <h1>Patient Record Export</h1>
   <div class="meta">Generated on ${escapeHtml(formatDateTimeLong(new Date().toISOString()))}</div>
   <div class="meta">Patient ID: <strong>${escapeHtml(patientCode)}</strong></div>
@@ -2637,7 +2676,25 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   </table>
   </div>
 
+  <div class="export-certification">
+    <p>
+      I certify that this document is a true and accurate copy of the patient record available at Smiles Dental Hub,
+      prepared from the information recorded in the clinic system as of the date and time stated above.
+    </p>
+    <div class="export-signature-block">
+      <div class="export-signature-line">
+        <div class="export-signature-name">${escapeHtml(dentalRecord.dentistName || dentalRecordMeta.updatedByName || 'Assigned Dentist')}</div>
+        <div class="export-signature-role">Assigned Dentist Signature</div>
+      </div>
+    </div>
+  </div>
+
   <p class="small">Prepared by: ${escapeHtml(preparedByName)}</p>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
 </body>
 </html>`
   }

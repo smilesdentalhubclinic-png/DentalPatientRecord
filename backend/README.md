@@ -205,15 +205,21 @@ No patient account role is included.
 - `sql/08_patient_code_sequence_hotfix.sql`
 - `sql/15_verification_codes_hotfix.sql`
 - `sql/09_auth_pgcrypto_search_path_hotfix.sql`
+- `sql/21_system_audit_logs.sql`
+- `sql/22_backfill_system_audit_logs.sql`
+- `sql/23_harden_system_audit_log_policies.sql`
 
 ### Run Order (Supabase SQL Editor)
 
 1. If upgrading an existing DB, run `backend/sql/00a_add_admin_role_enum.sql` in its own execution.
 2. Run `backend/sql/00_schema_and_policies.sql`.
-3. For older DBs, run applicable hotfix files: `04`, `05`, `06`, `07`, `08`, `09`.
-4. Optional (dev only): run `backend/sql/01_dev_seed_staff_accounts.sql`.
-5. Optional: run `backend/sql/03_seed_app_data.sql`.
-6. Optional: run `backend/sql/02_smoke_test_flow.sql`.
+3. For older DBs, run applicable hotfix files: `04`, `05`, `06`, `07`, `08`, `09`, `15`, `17`, `18`, `19`, `20`.
+4. Run `backend/sql/21_system_audit_logs.sql`.
+5. Run `backend/sql/22_backfill_system_audit_logs.sql`.
+6. Run `backend/sql/23_harden_system_audit_log_policies.sql`.
+7. Optional (dev only): run `backend/sql/01_dev_seed_staff_accounts.sql`.
+8. Optional: run `backend/sql/03_seed_app_data.sql`.
+9. Optional: run `backend/sql/02_smoke_test_flow.sql`.
 
 ### Admin RPCs
 

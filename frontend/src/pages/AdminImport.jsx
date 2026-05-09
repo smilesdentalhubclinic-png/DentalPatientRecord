@@ -276,7 +276,7 @@ function AdminImport() {
           <div className="admin-import-card-row">
             <ImportCard
               title="Patient Information File"
-              helper="Download the Excel template, fill in the Patient Information sheet, then upload the completed .xlsx file. CSV is still accepted if needed."
+              helper="Download the Excel template, encode the details in the Patient Information sheet, then upload the completed .xlsx file. CSV is still accepted if needed."
               fileName={patientImportFileName}
               inputRef={patientImportFileInputRef}
               isImporting={isImportingPatients}
@@ -290,7 +290,7 @@ function AdminImport() {
 
             <ImportCard
               title="Dental and Service Records File"
-              helper="Download the Excel template, fill in the Dental and Service Records sheet, then upload the completed .xlsx file. The second sheet contains sample examples only."
+              helper="Download the Excel template, encode the details in the Dental and Service Records sheet, then upload the completed .xlsx file."
               fileName={recordsImportFileName}
               inputRef={recordsImportFileInputRef}
               isImporting={isImportingRecords}
