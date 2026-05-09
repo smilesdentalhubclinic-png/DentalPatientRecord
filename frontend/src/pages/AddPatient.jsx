@@ -315,6 +315,7 @@ function AddPatient() {
   const [dentalNotes, setDentalNotes] = useState({})
   const [authorizationAccepted, setAuthorizationAccepted] = useState(false)
   const [isSubmitSuccessOpen, setIsSubmitSuccessOpen] = useState(false)
+  const [submitSuccessMessage, setSubmitSuccessMessage] = useState('Patient record submitted successfully.')
   const [isClearConfirmOpen, setIsClearConfirmOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isEmailVerificationOpen, setIsEmailVerificationOpen] = useState(false)
@@ -462,6 +463,85 @@ function AddPatient() {
     return normalized.toLowerCase()
   }
 
+  const isPatientEmailUnavailable = () => {
+    const normalized = normalizePatientEmail(patientInfo.email)
+    return Boolean(normalized) && isNotAvailableEmail(normalized)
+  }
+
+  const buildPatientPayload = () => {
+    const normalizedMedicalNotes = Object.fromEntries(
+      Object.entries(medicalNotes || {}).map(([key, value]) => [key, toTitleCase(value)]),
+    )
+    const normalizedDentalNotes = Object.fromEntries(
+      Object.entries(dentalNotes || {}).map(([key, value]) => [key, toTitleCase(value)]),
+    )
+
+    return {
+      first_name: toTitleCase(patientInfo.firstName.trim()),
+      last_name: toTitleCase(patientInfo.lastName.trim()),
+      middle_name: toTitleCase(patientInfo.middleName.trim()) || null,
+      suffix: toTitleCase(patientInfo.suffix.trim()) || null,
+      sex: normalizeSex(patientInfo.sex),
+      birth_date: patientInfo.birthdate || null,
+      phone: formatPhilippineE164(patientInfo.mobileNumber),
+      email: getResolvedPatientEmail(),
+      address: toTitleCase(patientInfo.currentAddress.trim()) || null,
+      nickname: toTitleCase(patientInfo.nickname.trim()) || null,
+      civil_status: normalizeCivilStatus(patientInfo.civilStatus),
+      occupation: toTitleCase(patientInfo.occupation.trim()) || null,
+      office_address: toTitleCase(patientInfo.officeAddress.trim()) || null,
+      emergency_contact_name: toTitleCase((isMinor ? patientInfo.guardianName : '').trim()) || null,
+      emergency_contact_phone: isMinor ? formatPhilippineE164(patientInfo.guardianMobileNumber) : null,
+      guardian_name: toTitleCase((isMinor ? patientInfo.guardianName : '').trim()) || null,
+      guardian_mobile_number: isMinor ? formatPhilippineE164(patientInfo.guardianMobileNumber) : null,
+      guardian_occupation: toTitleCase((isMinor ? patientInfo.guardianOccupation : '').trim()) || null,
+      guardian_office_address: toTitleCase((isMinor ? patientInfo.guardianOfficeAddress : '').trim()) || null,
+      health_conditions: {
+        ...checkedConditions,
+        othersText: checkedConditions.Others ? toTitleCase(checkedConditionsOtherText.trim()) : '',
+      },
+      allergen_info: {
+        values: Object.fromEntries(
+          Object.entries(ALLERGEN_FIELD_MAP).map(([label, key]) => [label, Boolean(allergenInfo[key])]),
+        ),
+        others: allergenInfo.others ? toTitleCase(allergenInfo.othersText || '') : '',
+      },
+      medical_history: {
+        physician: toTitleCase(medicalDetails.physicianName.trim()),
+        specialty: toTitleCase(medicalDetails.specialty.trim()),
+        address: toTitleCase(medicalDetails.address.trim()),
+        answers: medicalAnswers,
+        notes: normalizedMedicalNotes,
+      },
+      dental_history: {
+        previous: toTitleCase(dentalDetails.previousDentist.trim()),
+        lastExam: dentalDetails.lastExamDate.trim(),
+        reason: toTitleCase(dentalDetails.consultationReason.trim()),
+        answers: dentalAnswers,
+        notes: normalizedDentalNotes,
+      },
+      authorization_accepted: authorizationAccepted,
+      is_active: true,
+    }
+  }
+
+  const findExistingPendingPatientRequest = async ({ firstName, lastName, sex, birthdate }) => {
+    if (!firstName || !lastName || !sex || !birthdate) return null
+
+    const { data, error } = await supabase
+      .from('pending_patient_registrations')
+      .select('id, first_name, last_name, birth_date, sex, created_at')
+      .eq('status', 'pending')
+      .ilike('first_name', firstName)
+      .ilike('last_name', lastName)
+      .eq('sex', sex)
+      .eq('birth_date', birthdate)
+      .limit(1)
+
+    if (error) throw error
+    return data?.[0] ?? null
+  }
+
   const validatePatientInformationStep = () => {
     const requiredFields = [
       'lastName',
@@ -600,6 +680,25 @@ function AddPatient() {
           )
           return
         }
+
+        const duplicatePendingRequest = await findExistingPendingPatientRequest({
+          firstName: toTitleCase(patientInfo.firstName.trim()),
+          lastName: toTitleCase(patientInfo.lastName.trim()),
+          sex: normalizeSex(patientInfo.sex),
+          birthdate: patientInfo.birthdate,
+        })
+        if (duplicatePendingRequest) {
+          setInvalidPatientFields((previous) => ({
+            ...previous,
+            lastName: true,
+            firstName: true,
+            birthdate: true,
+            sex: true,
+            age: true,
+          }))
+          setValidationMessage('A matching patient submission is already waiting for admin approval.')
+          return
+        }
       } catch (duplicateCheckError) {
         setValidationMessage(duplicateCheckError?.message || 'Unable to validate existing records.')
         return
@@ -657,11 +756,15 @@ function AddPatient() {
       setValidationMessage('Please read and accept the authorization before submitting.')
       return
     }
-    if (!getResolvedPatientEmail()) {
-      setValidationMessage("A real patient email address is required to send the verification code. Replace 'N/A' with the patient's email to continue.")
+    setInvalidAuthorization(false)
+    if (isPatientEmailUnavailable()) {
+      void confirmSubmission({ requiresEmailVerification: false })
       return
     }
-    setInvalidAuthorization(false)
+    if (!getResolvedPatientEmail()) {
+      setValidationMessage("Email address must be a valid email or exactly 'N/A'.")
+      return
+    }
     void handleStartPatientEmailVerification()
   }
   const openDatePicker = (event) => {
@@ -863,7 +966,7 @@ function AddPatient() {
       setEmailVerificationCode('')
       setEmailVerificationError('')
       setEmailVerificationInfo('')
-      await confirmSubmission()
+      await confirmSubmission({ requiresEmailVerification: true })
     } catch (error) {
       setEmailVerificationError(error?.message || 'Unable to verify code.')
     } finally {
@@ -871,62 +974,10 @@ function AddPatient() {
     }
   }
 
-  const confirmSubmission = async () => {
+  const confirmSubmission = async ({ requiresEmailVerification = true } = {}) => {
     if (!validatePatientInformationStep()) return
     setIsSubmitting(true)
-    const normalizedMedicalNotes = Object.fromEntries(
-      Object.entries(medicalNotes || {}).map(([key, value]) => [key, toTitleCase(value)]),
-    )
-    const normalizedDentalNotes = Object.fromEntries(
-      Object.entries(dentalNotes || {}).map(([key, value]) => [key, toTitleCase(value)]),
-    )
-    const patientPayload = {
-      first_name: toTitleCase(patientInfo.firstName.trim()),
-      last_name: toTitleCase(patientInfo.lastName.trim()),
-      middle_name: toTitleCase(patientInfo.middleName.trim()) || null,
-      suffix: toTitleCase(patientInfo.suffix.trim()) || null,
-      sex: normalizeSex(patientInfo.sex),
-      birth_date: patientInfo.birthdate || null,
-      phone: formatPhilippineE164(patientInfo.mobileNumber),
-      email: getResolvedPatientEmail(),
-      address: toTitleCase(patientInfo.currentAddress.trim()) || null,
-      nickname: toTitleCase(patientInfo.nickname.trim()) || null,
-      civil_status: normalizeCivilStatus(patientInfo.civilStatus),
-      occupation: toTitleCase(patientInfo.occupation.trim()) || null,
-      office_address: toTitleCase(patientInfo.officeAddress.trim()) || null,
-      emergency_contact_name: toTitleCase((isMinor ? patientInfo.guardianName : '').trim()) || null,
-      emergency_contact_phone: isMinor ? formatPhilippineE164(patientInfo.guardianMobileNumber) : null,
-      guardian_name: toTitleCase((isMinor ? patientInfo.guardianName : '').trim()) || null,
-      guardian_mobile_number: isMinor ? formatPhilippineE164(patientInfo.guardianMobileNumber) : null,
-      guardian_occupation: toTitleCase((isMinor ? patientInfo.guardianOccupation : '').trim()) || null,
-      guardian_office_address: toTitleCase((isMinor ? patientInfo.guardianOfficeAddress : '').trim()) || null,
-      health_conditions: {
-        ...checkedConditions,
-        othersText: checkedConditions.Others ? toTitleCase(checkedConditionsOtherText.trim()) : '',
-      },
-      allergen_info: {
-        values: Object.fromEntries(
-          Object.entries(ALLERGEN_FIELD_MAP).map(([label, key]) => [label, Boolean(allergenInfo[key])]),
-        ),
-        others: allergenInfo.others ? toTitleCase(allergenInfo.othersText || '') : '',
-      },
-      medical_history: {
-        physician: toTitleCase(medicalDetails.physicianName.trim()),
-        specialty: toTitleCase(medicalDetails.specialty.trim()),
-        address: toTitleCase(medicalDetails.address.trim()),
-        answers: medicalAnswers,
-        notes: normalizedMedicalNotes,
-      },
-      dental_history: {
-        previous: toTitleCase(dentalDetails.previousDentist.trim()),
-        lastExam: dentalDetails.lastExamDate.trim(),
-        reason: toTitleCase(dentalDetails.consultationReason.trim()),
-        answers: dentalAnswers,
-        notes: normalizedDentalNotes,
-      },
-      authorization_accepted: authorizationAccepted,
-      is_active: true,
-    }
+    const patientPayload = buildPatientPayload()
 
     const getFallbackPatientCode = async () => {
       const { data, error: fetchError } = await supabase
@@ -995,6 +1046,58 @@ function AddPatient() {
         return
       }
 
+      const pendingRequest = await findExistingPendingPatientRequest({
+        firstName: patientPayload.first_name,
+        lastName: patientPayload.last_name,
+        sex: patientPayload.sex,
+        birthdate: patientPayload.birth_date,
+      })
+      if (pendingRequest) {
+        setInvalidPatientFields((previous) => ({
+          ...previous,
+          lastName: true,
+          firstName: true,
+          birthdate: true,
+          sex: true,
+          age: true,
+        }))
+        setValidationMessage('A matching patient submission is already waiting for admin approval.')
+        return
+      }
+
+      if (!requiresEmailVerification) {
+        const { data: pendingInsert, error: pendingInsertError } = await supabase
+          .from('pending_patient_registrations')
+          .insert({
+            first_name: patientPayload.first_name,
+            last_name: patientPayload.last_name,
+            middle_name: patientPayload.middle_name,
+            suffix: patientPayload.suffix,
+            sex: patientPayload.sex,
+            birth_date: patientPayload.birth_date,
+            email: null,
+            payload: patientPayload,
+            request_source: 'add_patient_form',
+          })
+          .select('id')
+          .single()
+
+        if (pendingInsertError) throw pendingInsertError
+
+        await recordSystemAudit({
+          action: 'patient_registration_pending_approval',
+          entityType: 'pending_patient_registration',
+          entityId: pendingInsert.id,
+          entityLabel: `${patientPayload.last_name}, ${patientPayload.first_name}`,
+          details: 'Submitted patient registration for admin approval because no patient email was provided.',
+        })
+
+        sessionStorage.removeItem(ADD_PATIENT_DRAFT_KEY)
+        setSubmitSuccessMessage('Patient request submitted. An admin must approve it because the patient email was marked as N/A.')
+        setIsSubmitSuccessOpen(true)
+        return
+      }
+
       const insertedPatient = await insertPatientWithRetry()
 
       const { error: logError } = await supabase.from('patient_logs').insert({
@@ -1010,15 +1113,18 @@ function AddPatient() {
         entityType: 'patient',
         entityId: insertedPatient.id,
         entityLabel: `${toTitleCase(patientInfo.lastName.trim())}, ${toTitleCase(patientInfo.firstName.trim())}`,
-        details: 'Created patient via Add Patient form.',
+        details: 'Created patient via Add Patient form after email verification.',
       })
 
       sessionStorage.removeItem(ADD_PATIENT_DRAFT_KEY)
+      setSubmitSuccessMessage('Patient record submitted successfully.')
       setIsSubmitSuccessOpen(true)
     } catch (submitError) {
       const fallback = 'Unable to save patient record.'
       setValidationMessage(
-        isPatientDuplicateError(submitError)
+        submitError?.code === '23505' && `${submitError?.message || ''} ${submitError?.details || ''}`.includes('idx_pending_patient_registrations_pending_identity_unique')
+          ? 'A matching patient submission is already waiting for admin approval.'
+          : isPatientDuplicateError(submitError)
           ? 'A patient with the same name, sex, and birthdate already exists.'
           : (submitError?.message || fallback),
       )
@@ -1048,6 +1154,7 @@ function AddPatient() {
     setInvalidDentalNotes({})
     setInvalidAuthorization(false)
     setValidationMessage('')
+    setSubmitSuccessMessage('Patient record submitted successfully.')
     setIsSubmitSuccessOpen(false)
     setIsClearConfirmOpen(false)
     setIsEmailVerificationOpen(false)
@@ -1680,7 +1787,7 @@ function AddPatient() {
               <h2 id="add-patient-success-title">Success</h2>
             </div>
             <div className="pr-modal-body add-patient-feedback-body">
-              <p>Patient record submitted successfully.</p>
+              <p>{submitSuccessMessage}</p>
               <div className="modal-actions center">
                 <button type="button" className="success-btn" onClick={handleSuccessAcknowledge}>OK</button>
               </div>

@@ -19,6 +19,18 @@ const formatDate = (value) => {
   return `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
 }
 
+const formatDateTime = (value) => {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  const dateLabel = `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
+  const timeLabel = date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+  return `${dateLabel} ${timeLabel}`
+}
+
 const formatSex = (value) => {
   if (!value) return '-'
   if (value === 'Male') return 'M'
@@ -54,9 +66,42 @@ const patientCodeNumber = (row) => {
   return Number.isFinite(digits) ? digits : 0
 }
 
-function PatientRecords() {
+const formatStaffDisplayName = (profile) => {
+  const fullName = `${profile?.full_name || ''}`.trim()
+  if (fullName) return fullName
+  return '-'
+}
+
+const fetchStaffNames = async (userIds) => {
+  const ids = [...new Set((userIds ?? []).filter(Boolean))]
+  if (!ids.length) return {}
+
+  let data = null
+  let fetchError = null
+
+  const rpcResult = await supabase.rpc('lookup_staff_names', { p_user_ids: ids })
+  data = rpcResult.data
+  fetchError = rpcResult.error
+
+  if (fetchError) {
+    const fallbackResult = await supabase
+      .from('staff_profiles')
+      .select('user_id, full_name')
+      .in('user_id', ids)
+
+    data = fallbackResult.data
+    fetchError = fallbackResult.error
+  }
+
+  if (fetchError) throw fetchError
+
+  return Object.fromEntries((data ?? []).map((row) => [row.user_id, formatStaffDisplayName(row)]))
+}
+
+function PatientRecords({ currentRole }) {
   const navigate = useNavigate()
   const [records, setRecords] = useState([])
+  const [queueEntries, setQueueEntries] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
@@ -70,6 +115,16 @@ function PatientRecords() {
   const [statusConfirmRow, setStatusConfirmRow] = useSessionStorageState(`${PATIENT_RECORDS_UI_STORAGE_PREFIX}statusConfirmRow`, null)
   const [isStatusUpdating, setIsStatusUpdating] = useState(false)
   const [showFilters, setShowFilters] = useSessionStorageState(`${PATIENT_RECORDS_UI_STORAGE_PREFIX}filtersOpen`, false)
+  const [showQueueModal, setShowQueueModal] = useState(false)
+  const [queueActionKey, setQueueActionKey] = useState('')
+  const [queueStatusViewFilter, setQueueStatusViewFilter] = useSessionStorageState(
+    `${PATIENT_RECORDS_UI_STORAGE_PREFIX}queueStatusViewFilter`,
+    'all',
+  )
+  const [acknowledgedAcceptedQueueIds, setAcknowledgedAcceptedQueueIds] = useSessionStorageState(
+    `${PATIENT_RECORDS_UI_STORAGE_PREFIX}acknowledgedAcceptedQueueIds`,
+    [],
+  )
   const [sexFilter, setSexFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [minAgeFilter, setMinAgeFilter] = useState('')
@@ -77,25 +132,74 @@ function PatientRecords() {
   const [registeredFromFilter, setRegisteredFromFilter] = useState('')
   const [registeredToFilter, setRegisteredToFilter] = useState('')
 
-  const loadRecords = async () => {
-    setLoading(true)
-    setError('')
+  const canAcceptQueue = currentRole === 'admin' || currentRole === 'associate_dentist'
 
-    const { data, error: fetchError } = await supabase
+  const loadQueueEntries = async () => {
+    const { data, error: queueError } = await supabase
+      .from('patient_queue_entries')
+      .select('id, patient_id, queue_status, queued_by, queued_at, accepted_by, accepted_at, patients(id, patient_code, first_name, last_name, sex, birth_date)')
+      .in('queue_status', ['pending', 'accepted'])
+      .order('queued_at', { ascending: true })
+
+    if (queueError) throw queueError
+
+    const queueRows = data ?? []
+    const staffNames = await fetchStaffNames(
+      queueRows.flatMap((row) => [row.queued_by, row.accepted_by]).filter(Boolean),
+    )
+
+    const normalizedQueue = queueRows.map((row) => {
+      const patientData = Array.isArray(row.patients) ? row.patients[0] : row.patients
+      return {
+        id: row.id,
+        patientId: row.patient_id,
+        queueStatus: row.queue_status,
+        queuedBy: row.queued_by,
+        queuedByName: staffNames[row.queued_by] || '-',
+        queuedAt: row.queued_at,
+        acceptedBy: row.accepted_by,
+        acceptedByName: staffNames[row.accepted_by] || '-',
+        acceptedAt: row.accepted_at,
+        patient: patientData
+          ? {
+            id: patientData.id,
+            patient_code: patientData.patient_code,
+            first_name: patientData.first_name,
+            last_name: patientData.last_name,
+            sex: patientData.sex,
+            birth_date: patientData.birth_date,
+          }
+          : null,
+      }
+    })
+
+    setQueueEntries(normalizedQueue)
+  }
+
+  const loadPatientRows = async () => {
+    const { data, error: patientsError } = await supabase
       .from('patients')
       .select('id, patient_code, first_name, last_name, sex, birth_date, created_at, is_active, archived_at')
       .is('archived_at', null)
       .order('created_at', { ascending: true })
 
-    if (fetchError) {
+    if (patientsError) throw patientsError
+    setRecords(data ?? [])
+  }
+
+  const loadRecords = async () => {
+    setLoading(true)
+    setError('')
+
+    try {
+      await Promise.all([loadPatientRows(), loadQueueEntries()])
+    } catch (fetchError) {
       setError(fetchError.message)
       setRecords([])
+      setQueueEntries([])
+    } finally {
       setLoading(false)
-      return
     }
-
-    setRecords(data ?? [])
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -106,13 +210,113 @@ function PatientRecords() {
     return () => clearTimeout(bootstrapTimer)
   }, [])
 
+  useEffect(() => {
+    const channel = supabase
+      .channel('patient-queue-live')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'patient_queue_entries',
+        },
+        () => {
+          void loadQueueEntries().catch((queueError) => {
+            setError(queueError?.message || 'Unable to refresh patient queue.')
+          })
+        },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [])
+
+  const pendingQueueEntries = useMemo(
+    () => queueEntries.filter((entry) => entry.queueStatus === 'pending'),
+    [queueEntries],
+  )
+
+  const acceptedQueueEntries = useMemo(
+    () => queueEntries.filter((entry) => entry.queueStatus === 'accepted'),
+    [queueEntries],
+  )
+
+  const visibleQueueEntries = useMemo(
+    () => queueEntries,
+    [queueEntries],
+  )
+
+  const filteredQueueEntries = useMemo(
+    () => (
+      queueStatusViewFilter === 'accepted'
+        ? visibleQueueEntries.filter((entry) => entry.queueStatus === 'accepted')
+        : queueStatusViewFilter === 'pending'
+          ? visibleQueueEntries.filter((entry) => entry.queueStatus === 'pending')
+          : visibleQueueEntries
+    ),
+    [queueStatusViewFilter, visibleQueueEntries],
+  )
+
+  const receptionistRoomAssignments = useMemo(() => {
+    const slots = [
+      { slotId: 'room-slot-1', entryId: null, dentistName: 'Unassigned', patientName: 'No accepted queue yet' },
+      { slotId: 'room-slot-2', entryId: null, dentistName: 'Unassigned', patientName: 'No accepted queue yet' },
+    ]
+
+    const sortedAcceptedQueueEntries = [...acceptedQueueEntries].sort(
+      (a, b) => new Date(a.acceptedAt || 0).getTime() - new Date(b.acceptedAt || 0).getTime(),
+    )
+
+    sortedAcceptedQueueEntries.forEach((entry, index) => {
+      const slotIndex = index % 2
+      const dentistName = `${entry.acceptedByName || ''}`.trim()
+      const patientName = `${entry.patient?.last_name || ''}, ${entry.patient?.first_name || ''}`.trim().replace(/^,\s*/, '')
+
+      slots[slotIndex] = {
+        slotId: slots[slotIndex].slotId,
+        entryId: entry.id,
+        dentistName: dentistName || 'Unassigned',
+        patientName: patientName || 'No patient assigned',
+      }
+    })
+
+    return slots
+  }, [acceptedQueueEntries])
+
+  useEffect(() => {
+    const acceptedIds = new Set(acceptedQueueEntries.map((entry) => entry.id).filter(Boolean))
+    setAcknowledgedAcceptedQueueIds((previous) => {
+      const current = Array.isArray(previous) ? previous : []
+      const nextValue = current.filter((id) => acceptedIds.has(id))
+      return nextValue.length === current.length
+        && nextValue.every((id, index) => id === current[index])
+        ? previous
+        : nextValue
+    })
+  }, [acceptedQueueEntries, setAcknowledgedAcceptedQueueIds])
+
+  const acknowledgeAcceptedQueueCard = (entryId) => {
+    if (!entryId) return
+    setAcknowledgedAcceptedQueueIds((previous) => {
+      const current = Array.isArray(previous) ? previous : []
+      if (current.includes(entryId)) return current
+      return [...current, entryId]
+    })
+  }
+
+  const queueByPatientId = useMemo(
+    () => Object.fromEntries(pendingQueueEntries.map((entry, index) => [entry.patientId, { ...entry, position: index + 1 }])),
+    [pendingQueueEntries],
+  )
+
   const toggleRecord = async (row) => {
     const nextIsActive = !row.is_active
     setError('')
     setIsStatusUpdating(true)
     setStatusConfirmRow(null)
 
-    // Optimistic update for snappier UI; rollback only if save fails.
     setRecords((prev) =>
       prev.map((item) => (
         item.id === row.id
@@ -161,7 +365,6 @@ function PatientRecords() {
         details: nextIsActive ? 'Set patient active.' : 'Set patient inactive.',
       })
     } catch (updateError) {
-      // Rollback optimistic state if the database update failed.
       setRecords((prev) =>
         prev.map((item) => (
           item.id === row.id
@@ -176,6 +379,98 @@ function PatientRecords() {
       setError(updateError.message)
     } finally {
       setIsStatusUpdating(false)
+    }
+  }
+
+  const addPatientToQueue = async (row) => {
+    if (!row?.id) return
+    if (!row.is_active) {
+      setError('Inactive patients cannot be added to the queue.')
+      return
+    }
+
+    setQueueActionKey(`add-${row.id}`)
+    setError('')
+
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const actorId = authData?.user?.id ?? null
+
+      const { data: insertedEntry, error: insertError } = await supabase
+        .from('patient_queue_entries')
+        .insert({
+          patient_id: row.id,
+          queued_by: actorId,
+        })
+        .select('id')
+        .single()
+
+      if (insertError) throw insertError
+
+      await recordSystemAudit({
+        action: 'patient_added_to_queue',
+        entityType: 'patient_queue_entry',
+        entityId: insertedEntry.id,
+        entityLabel: `${row.last_name}, ${row.first_name}`,
+        details: 'Added patient to queue.',
+        metadata: { patientId: row.id },
+      })
+
+      await loadRecords()
+    } catch (queueError) {
+      const queueErrorText = `${queueError?.message || ''} ${queueError?.details || ''}`
+      if (queueError?.code === '23505' && queueErrorText.includes('idx_patient_queue_entries_single_pending_patient')) {
+        setError('That patient is already in the queue.')
+      } else {
+        setError(queueError?.message || 'Unable to add patient to the queue.')
+      }
+    } finally {
+      setQueueActionKey('')
+    }
+  }
+
+  const acceptQueueEntry = async (entry) => {
+    if (!entry?.id || !canAcceptQueue) return
+    if (pendingQueueEntries[0]?.id !== entry.id) {
+      setError('Only the first queued patient can be accepted.')
+      return
+    }
+
+    setQueueActionKey(`accept-${entry.id}`)
+    setError('')
+
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const actorId = authData?.user?.id ?? null
+
+      const { error: updateError } = await supabase
+        .from('patient_queue_entries')
+        .update({
+          queue_status: 'accepted',
+          accepted_by: actorId,
+          accepted_at: new Date().toISOString(),
+        })
+        .eq('id', entry.id)
+        .eq('queue_status', 'pending')
+
+      if (updateError) throw updateError
+
+      await recordSystemAudit({
+        action: 'patient_queue_accepted',
+        entityType: 'patient_queue_entry',
+        entityId: entry.id,
+        entityLabel: `${entry.patient?.last_name || ''}, ${entry.patient?.first_name || ''}`.trim().replace(/^,\s*/, ''),
+        details: 'Accepted patient from queue.',
+        metadata: { patientId: entry.patientId },
+      })
+
+      await loadRecords()
+      setShowQueueModal(false)
+      navigate(`/records/${entry.patientId}`)
+    } catch (queueError) {
+      setError(queueError?.message || 'Unable to accept queued patient.')
+    } finally {
+      setQueueActionKey('')
     }
   }
 
@@ -283,12 +578,14 @@ function PatientRecords() {
         ? 'Ascending'
         : 'Descending'
   )
+
   const getVisiblePageItems = () => {
     if (totalPages <= 3) return Array.from({ length: totalPages }, (_, index) => index + 1)
 
     const startPage = Math.max(1, Math.min(safePage - 1, totalPages - 2))
     return Array.from({ length: 3 }, (_, index) => startPage + index)
   }
+
   const pageItems = getVisiblePageItems()
 
   const handlePageJump = () => {
@@ -332,6 +629,9 @@ function PatientRecords() {
             <button type="button" className="primary" onClick={() => navigate('/add-patient')}>
               Add New Patient
             </button>
+            <button type="button" className="ghost patient-queue-trigger" onClick={() => setShowQueueModal(true)}>
+              Patient Queue
+            </button>
             <button
               type="button"
               className={`ghost records-filter-toggle ${showFilters ? 'is-open' : ''}`}
@@ -371,9 +671,7 @@ function PatientRecords() {
                   setPageInput('1')
                 }}
               >
-                <SortDirectionIcon
-                  direction={currentSortDirection}
-                />
+                <SortDirectionIcon direction={currentSortDirection} />
               </button>
             </div>
           </div>
@@ -390,39 +688,61 @@ function PatientRecords() {
             <span>Age</span>
             <span>Date Registered</span>
             <span>Status</span>
+            <span>Queue</span>
             <span>Actions</span>
           </div>
           <div className="table-body">
-            {pagedRecords.map((row) => (
-              <div key={row.id} className={`table-row ${row.is_active ? '' : 'inactive-row'}`}>
-                <span>{formatPatientCode(row.patient_code, row.id)}</span>
-                <span>{`${row.last_name}, ${row.first_name}`}</span>
-                <span>{formatSex(row.sex)}</span>
-                <span>{calculateAge(row.birth_date)}</span>
-                <span>{formatDate(row.created_at)}</span>
-                <span>
-                  <button
-                    type="button"
-                    className={`status ${row.is_active ? 'on' : 'off'}`}
-                    aria-label={`Set ${row.last_name}, ${row.first_name} as ${row.is_active ? 'inactive' : 'active'}`}
-                    title={row.is_active ? 'Active' : 'Inactive'}
-                    onClick={() => {
-                      setError('')
-                      setStatusConfirmRow(row)
-                    }}
-                  />
-                </span>
-                <span>
-                  <button
-                    type="button"
-                    className="view"
-                    onClick={() => navigate(`/records/${row.id}`)}
-                  >
-                    View
-                  </button>
-                </span>
-              </div>
-            ))}
+            {pagedRecords.map((row) => {
+              const queueEntry = queueByPatientId[row.id]
+              const isAddingToQueue = queueActionKey === `add-${row.id}`
+
+              return (
+                <div key={row.id} className={`table-row ${row.is_active ? '' : 'inactive-row'}`}>
+                  <span>{formatPatientCode(row.patient_code, row.id)}</span>
+                  <span>{`${row.last_name}, ${row.first_name}`}</span>
+                  <span>{formatSex(row.sex)}</span>
+                  <span>{calculateAge(row.birth_date)}</span>
+                  <span>{formatDate(row.created_at)}</span>
+                  <span>
+                    <button
+                      type="button"
+                      className={`status ${row.is_active ? 'on' : 'off'}`}
+                      aria-label={`Set ${row.last_name}, ${row.first_name} as ${row.is_active ? 'inactive' : 'active'}`}
+                      title={row.is_active ? 'Active' : 'Inactive'}
+                      onClick={() => {
+                        setError('')
+                        setStatusConfirmRow(row)
+                      }}
+                    />
+                  </span>
+                  <span>
+                    {queueEntry ? (
+                      <button type="button" className="queue-chip queued" onClick={() => setShowQueueModal(true)}>
+                        {`Queued #${queueEntry.position}`}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="queue-chip"
+                        disabled={!row.is_active || Boolean(queueActionKey)}
+                        onClick={() => { void addPatientToQueue(row) }}
+                      >
+                        {isAddingToQueue ? 'Adding...' : 'Add to Queue'}
+                      </button>
+                    )}
+                  </span>
+                  <span>
+                    <button
+                      type="button"
+                      className="view"
+                      onClick={() => navigate(`/records/${row.id}`)}
+                    >
+                      View
+                    </button>
+                  </span>
+                </div>
+              )
+            })}
             {!loading && filteredRecords.length === 0 ? <p>No records found.</p> : null}
           </div>
         </div>
@@ -599,13 +919,115 @@ function PatientRecords() {
         </div>
       ) : null}
 
+      {showQueueModal ? <div className="modal-backdrop" onClick={() => { if (!queueActionKey) setShowQueueModal(false) }} /> : null}
+      {showQueueModal ? (
+        <div className="pr-modal procedures-modal patient-queue-modal">
+          <div className="pr-modal-head">
+            <h2>Patient Queue</h2>
+            <button type="button" onClick={() => { if (!queueActionKey) setShowQueueModal(false) }}>X</button>
+          </div>
+          <div className="pr-modal-body">
+            <div className="patient-queue-summary">
+              {canAcceptQueue ? (
+                <>
+                  <strong>{`${pendingQueueEntries.length} patient${pendingQueueEntries.length === 1 ? '' : 's'} waiting`}</strong>
+                  <span>You can accept queued patients from here.</span>
+                </>
+              ) : (
+                <div className="patient-queue-rooms" aria-label="Assigned queue rooms">
+                  {receptionistRoomAssignments.map((room) => (
+                    <button
+                      key={room.slotId}
+                      type="button"
+                      className={`patient-queue-room-card ${room.entryId && !acknowledgedAcceptedQueueIds.includes(room.entryId) ? 'is-alerting' : ''}`}
+                      onClick={() => acknowledgeAcceptedQueueCard(room.entryId)}
+                      disabled={!room.entryId}
+                    >
+                      <span className="patient-queue-room-label">{room.dentistName}</span>
+                      <strong>{room.patientName}</strong>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="patient-queue-toolbar">
+              <label htmlFor="patient-queue-status-filter">
+                Status:
+                <select
+                  id="patient-queue-status-filter"
+                  value={queueStatusViewFilter}
+                  onChange={(event) => setQueueStatusViewFilter(event.target.value)}
+                >
+                  <option value="all">All</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="pending">Pending</option>
+                </select>
+              </label>
+            </div>
+
+            <div className={`records-table patient-queue-table ${canAcceptQueue ? 'can-accept-queue' : 'read-only-queue'}`}>
+              <div className="table-head">
+                <span>#</span>
+                <span>Patient ID</span>
+                <span>Full Name</span>
+                <span>Queued At</span>
+                <span>Queued By</span>
+                <span>Status</span>
+                <span>Accepted By</span>
+                {canAcceptQueue ? <span>Action</span> : null}
+              </div>
+              <div className="table-body">
+                {filteredQueueEntries.map((entry, index) => {
+                  const isAccepting = queueActionKey === `accept-${entry.id}`
+                  const pendingIndex = pendingQueueEntries.findIndex((pendingEntry) => pendingEntry.id === entry.id)
+                  const isFirstInQueue = pendingIndex === 0
+                  const isAccepted = entry.queueStatus === 'accepted'
+
+                  return (
+                    <div key={entry.id} className="table-row">
+                      <span>{index + 1}</span>
+                      <span>{formatPatientCode(entry.patient?.patient_code, entry.patient?.id)}</span>
+                      <span>{`${entry.patient?.last_name || ''}, ${entry.patient?.first_name || ''}`.trim().replace(/^,\s*/, '') || 'Patient'}</span>
+                      <span>{formatDateTime(entry.queuedAt)}</span>
+                      <span>{entry.queuedByName || '-'}</span>
+                      <span>{isAccepted ? 'Accepted' : 'Pending'}</span>
+                      <span>{isAccepted ? entry.acceptedByName || '-' : '-'}</span>
+                      {canAcceptQueue ? (
+                        <span>
+                          {isAccepted ? (
+                            <span className="queue-readonly-label">Accepted</span>
+                          ) : isFirstInQueue ? (
+                            <button
+                              type="button"
+                              className="view queue-accept-btn"
+                              disabled={Boolean(queueActionKey)}
+                              onClick={() => { void acceptQueueEntry(entry) }}
+                            >
+                              {isAccepting ? 'Accepting...' : 'Accept'}
+                            </button>
+                          ) : (
+                            <span className="queue-readonly-label">Locked</span>
+                          )}
+                        </span>
+                      ) : null}
+                    </div>
+                  )
+                })}
+                {!filteredQueueEntries.length ? <p>No patients match the selected queue filter.</p> : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {statusConfirmRow ? <div className="modal-backdrop" onClick={() => { if (!isStatusUpdating) setStatusConfirmRow(null) }} /> : null}
       {statusConfirmRow ? (
         <div className="pr-modal procedures-modal archive-modal status-confirm-modal">
           <div className="pr-modal-head"><h2>Confirm Status</h2></div>
           <div className="pr-modal-body">
             <p>
-              Are you sure you want to {statusConfirmRow.is_active ? 'inactive' : 'active'} this user?
+              Are you sure you want to {statusConfirmRow.is_active ? 'inactive' : 'active'} this patient?
             </p>
             <div className="modal-actions">
               <button type="button" className="danger-btn" disabled={isStatusUpdating} onClick={() => setStatusConfirmRow(null)}>No</button>

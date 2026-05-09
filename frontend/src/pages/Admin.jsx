@@ -7,6 +7,7 @@ import { supabase } from '../lib/supabaseClient'
 import useSessionStorageState, { UI_SESSION_STORAGE_PREFIX } from '../hooks/useSessionStorageState'
 import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidation'
 import { recordSystemAudit } from '../utils/auditLog'
+import { findExistingPatientRecord, isPatientDuplicateError } from '../utils/patientDuplicateCheck'
 
 const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
@@ -211,6 +212,40 @@ const formatPhilippineMobileDisplay = (value = '') => {
   return localDigits ? `+63${localDigits}` : '-'
 }
 
+const getDisplayValue = (value, fallback = 'N/A') => `${value ?? ''}`.trim() || fallback
+
+const formatHistoryAnswer = (answer, note) => {
+  const normalizedAnswer = `${answer || ''}`.trim() || '-'
+  const normalizedNote = `${note || ''}`.trim()
+  return normalizedAnswer === 'YES' && normalizedNote ? `${normalizedAnswer} - ${normalizedNote}` : normalizedAnswer
+}
+
+const summarizeHealthConditions = (healthConditions) => {
+  if (!healthConditions || typeof healthConditions !== 'object' || Array.isArray(healthConditions)) return 'None selected'
+
+  const entries = Object.entries(healthConditions)
+    .filter(([key, value]) => key !== 'othersText' && Boolean(value))
+    .map(([key]) => key)
+
+  const othersText = `${healthConditions.othersText || ''}`.trim()
+  if (othersText) entries.push(`Others: ${othersText}`)
+
+  return entries.length > 0 ? entries.join(', ') : 'None selected'
+}
+
+const summarizeAllergens = (allergenInfo) => {
+  if (!allergenInfo || typeof allergenInfo !== 'object' || Array.isArray(allergenInfo)) return 'None selected'
+
+  const labels = Object.entries(allergenInfo.values || {})
+    .filter(([, value]) => Boolean(value))
+    .map(([label]) => label)
+
+  const others = `${allergenInfo.others || ''}`.trim()
+  if (others) labels.push(`Others: ${others}`)
+
+  return labels.length > 0 ? labels.join(', ') : 'None selected'
+}
+
 const formatStaffDisplayName = (profile) => {
   const firstName = `${profile?.first_name ?? ''}`.trim()
   const middleName = `${profile?.middle_name ?? ''}`.trim()
@@ -378,6 +413,7 @@ function Admin() {
   const [showAddUser, setShowAddUser] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showAddUser`, false)
   const [users, setUsers] = useState([])
   const [inactivePatients, setInactivePatients] = useState([])
+  const [pendingPatientRequests, setPendingPatientRequests] = useState([])
   const [archivePatients, setArchivePatients] = useState([])
   const [archiveUsers, setArchiveUsers] = useState([])
   const [archiveServices, setArchiveServices] = useState([])
@@ -386,14 +422,17 @@ function Admin() {
   const [archiveType, setArchiveType] = useState('patients')
   const [usersPage, setUsersPage] = useState(1)
   const [inactivePage, setInactivePage] = useState(1)
+  const [pendingPage, setPendingPage] = useState(1)
   const [archivePage, setArchivePage] = useState(1)
   const [auditPage, setAuditPage] = useState(1)
   const [usersRowsPerPage, setUsersRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [inactiveRowsPerPage, setInactiveRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
+  const [pendingRowsPerPage, setPendingRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [archiveRowsPerPage, setArchiveRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [auditRowsPerPage, setAuditRowsPerPage] = useState(DEFAULT_PAGE_SIZE)
   const [usersPageInput, setUsersPageInput] = useState('1')
   const [inactivePageInput, setInactivePageInput] = useState('1')
+  const [pendingPageInput, setPendingPageInput] = useState('1')
   const [archivePageInput, setArchivePageInput] = useState('1')
   const [auditPageInput, setAuditPageInput] = useState('1')
   const [usersSearchTerm, setUsersSearchTerm] = useState('')
@@ -403,6 +442,7 @@ function Admin() {
   const [usersCreatedSortDirection, setUsersCreatedSortDirection] = useState('desc')
   const [usersRoleSortDirection, setUsersRoleSortDirection] = useState('asc')
   const [inactiveSearchTerm, setInactiveSearchTerm] = useState('')
+  const [pendingSearchTerm, setPendingSearchTerm] = useState('')
   const [inactiveSortBy, setInactiveSortBy] = useState('patientId')
   const [inactiveNameSortDirection, setInactiveNameSortDirection] = useState('asc')
   const [inactivePatientIdSortDirection, setInactivePatientIdSortDirection] = useState('desc')
@@ -432,6 +472,7 @@ function Admin() {
   const [importError, setImportError] = useState('')
   const [isImportingPatients, setIsImportingPatients] = useState(false)
   const [isImportingRecords, setIsImportingRecords] = useState(false)
+  const [pendingProcessingId, setPendingProcessingId] = useState('')
   const [showUsersFilters, setShowUsersFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showUsersFilters`, false)
   const [showInactiveFilters, setShowInactiveFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showInactiveFilters`, false)
   const [showArchiveFilters, setShowArchiveFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showArchiveFilters`, false)
@@ -710,11 +751,28 @@ function Admin() {
     return Object.fromEntries((data ?? []).map((row) => [row.user_id, row.full_name]))
   }
 
+  const loadPendingPatientRequests = async () => {
+    const { data, error: fetchError } = await supabase
+      .from('pending_patient_registrations')
+      .select('id, first_name, last_name, middle_name, suffix, sex, birth_date, email, payload, requested_by, created_at, status')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+
+    if (fetchError) throw fetchError
+
+    const staffNames = await fetchStaffNames((data ?? []).map((row) => row.requested_by).filter(Boolean))
+    setPendingPatientRequests((data ?? []).map((row) => ({
+      ...row,
+      requested_by_name: staffNames[row.requested_by] || '-',
+    })))
+  }
+
   const loadAuditLogs = async () => {
     const [
       systemAuditResult,
       patientLogsResult,
       archiveEventsResult,
+      pendingPatientRequestsResult,
     ] = await Promise.all([
       supabase
         .from('system_audit_logs')
@@ -728,14 +786,20 @@ function Admin() {
         .from('archive_events')
         .select('id, table_name, record_id, action, reason, performed_by, created_at')
         .order('created_at', { ascending: false }),
+      supabase
+        .from('pending_patient_registrations')
+        .select('id, first_name, last_name, status, request_source, requested_by, decided_by, created_at, decided_at')
+        .order('created_at', { ascending: false }),
     ])
 
     if (patientLogsResult.error) throw patientLogsResult.error
     if (archiveEventsResult.error) throw archiveEventsResult.error
+    if (pendingPatientRequestsResult.error) throw pendingPatientRequestsResult.error
 
     const systemRows = systemAuditResult.error ? [] : (systemAuditResult.data ?? [])
     const patientLogRows = patientLogsResult.data ?? []
     const archiveEventRows = archiveEventsResult.data ?? []
+    const pendingRequestRows = pendingPatientRequestsResult.data ?? []
 
     const patientIds = [...new Set([
       ...patientLogRows.map((row) => row.patient_id).filter(Boolean),
@@ -776,6 +840,8 @@ function Admin() {
         ...systemRows.map((row) => row.actor_user_id).filter(Boolean),
         ...patientLogRows.map((row) => row.created_by).filter(Boolean),
         ...archiveEventRows.map((row) => row.performed_by).filter(Boolean),
+        ...pendingRequestRows.map((row) => row.requested_by).filter(Boolean),
+        ...pendingRequestRows.map((row) => row.decided_by).filter(Boolean),
       ]),
     ])
 
@@ -860,12 +926,53 @@ function Admin() {
       }
     })
 
+    const normalizedPendingRequestEvents = pendingRequestRows.flatMap((row) => {
+      const subject = `${row.last_name || ''}, ${row.first_name || ''}`.trim().replace(/^,\s*/, '') || 'Patient request'
+      const rows = [
+        {
+          id: `pending-patient-request-created-${row.id}`,
+          timestamp: row.created_at,
+          source: 'Patient Request',
+          action: 'Patient Registration Pending Approval',
+          subject,
+          actorName: staffNames[row.requested_by] || '-',
+          details: 'Submitted patient registration for admin approval because no patient email was provided.',
+        },
+      ]
+
+      if (row.status === 'approved' && row.decided_at) {
+        rows.push({
+          id: `pending-patient-request-approved-${row.id}`,
+          timestamp: row.decided_at,
+          source: 'Patient Request',
+          action: 'Pending Patient Request Approved',
+          subject,
+          actorName: staffNames[row.decided_by] || '-',
+          details: 'Approved pending patient request and created patient record.',
+        })
+      }
+
+      if (row.status === 'declined' && row.decided_at) {
+        rows.push({
+          id: `pending-patient-request-declined-${row.id}`,
+          timestamp: row.decided_at,
+          source: 'Patient Request',
+          action: 'Pending Patient Request Declined',
+          subject,
+          actorName: staffNames[row.decided_by] || '-',
+          details: 'Declined pending patient request.',
+        })
+      }
+
+      return rows
+    })
+
     const seenLegacyKeys = new Set(
       normalizedSystemRows
         .map((row) => `${row.timestamp}|${row.action}|${row.subject}|${row.details}`),
     )
 
-    const mergedLegacyRows = [...normalizedPatientLogs, ...normalizedArchiveEvents].filter((row) => {
+    const mergedLegacyRows = [...normalizedPatientLogs, ...normalizedArchiveEvents, ...normalizedPendingRequestEvents].filter((row) => {
       const key = `${row.timestamp}|${row.action}|${row.subject}|${row.details}`
       if (seenLegacyKeys.has(key)) return false
       seenLegacyKeys.add(key)
@@ -882,7 +989,7 @@ function Admin() {
     setLoading(true)
     setError('')
     try {
-      await Promise.all([loadUsers(), loadInactivePatients(), loadArchives(), loadAuditLogs()])
+      await Promise.all([loadUsers(), loadInactivePatients(), loadPendingPatientRequests(), loadArchives(), loadAuditLogs()])
     } catch (fetchError) {
       setError(fetchError.message)
     } finally {
@@ -914,6 +1021,11 @@ function Admin() {
   const openConfirmRetrieve = (payload) => {
     setSelected(payload)
     setModal('confirm-retrieve')
+  }
+
+  const openPendingRequestPreview = (request) => {
+    setSelected(request)
+    setModal('preview-patient-request')
   }
 
   const openEditUser = (user) => {
@@ -1362,6 +1474,131 @@ function Admin() {
     showSuccess('Retrieved successfully')
   }
 
+  const approvePendingPatientRequest = async (request) => {
+    if (!request?.id) return
+    if (!window.confirm(`Approve patient request for ${request.last_name}, ${request.first_name}?`)) return
+
+    setPendingProcessingId(request.id)
+    setError('')
+
+    try {
+      const payload = request.payload && typeof request.payload === 'object' && !Array.isArray(request.payload)
+        ? request.payload
+        : null
+      if (!payload) {
+        throw new Error('The pending request payload is missing or invalid.')
+      }
+
+      const duplicatePatient = await findExistingPatientRecord(supabase, {
+        firstName: payload.first_name,
+        lastName: payload.last_name,
+        sex: payload.sex,
+        birthdate: payload.birth_date,
+      })
+      if (duplicatePatient) {
+        throw new Error(
+          `Existing record found (${formatPatientCode(duplicatePatient.patient_code, duplicatePatient.id)} - ${duplicatePatient.last_name}, ${duplicatePatient.first_name}).`,
+        )
+      }
+
+      const { data: authData } = await supabase.auth.getUser()
+      const actorId = authData?.user?.id ?? null
+
+      const { data: insertedPatient, error: insertError } = await supabase
+        .from('patients')
+        .insert({
+          ...payload,
+          created_by: actorId,
+          updated_by: actorId,
+        })
+        .select('id, patient_code')
+        .single()
+
+      if (insertError) throw insertError
+
+      const { error: logError } = await supabase.from('patient_logs').insert({
+        patient_id: insertedPatient.id,
+        action: 'create_patient',
+        details: 'Created from approved pending patient request',
+      })
+      if (logError) throw logError
+
+      const { error: updateError } = await supabase
+        .from('pending_patient_registrations')
+        .update({
+          status: 'approved',
+          decided_by: actorId,
+          decided_at: new Date().toISOString(),
+          resolved_patient_id: insertedPatient.id,
+        })
+        .eq('id', request.id)
+        .eq('status', 'pending')
+
+      if (updateError) throw updateError
+
+      await loadAll()
+      await recordSystemAudit({
+        action: 'pending_patient_request_approved',
+        entityType: 'pending_patient_registration',
+        entityId: request.id,
+        entityLabel: `${request.last_name}, ${request.first_name}`,
+        details: 'Approved pending patient request and created patient record.',
+        metadata: {
+          resolvedPatientId: insertedPatient.id,
+          patientCode: insertedPatient.patient_code,
+        },
+      })
+      showSuccess('Patient request approved successfully.')
+    } catch (approveError) {
+      setError(
+        isPatientDuplicateError(approveError)
+          ? 'A patient with the same name, sex, and birthdate already exists.'
+          : (approveError?.message || 'Unable to approve patient request.'),
+      )
+    } finally {
+      setPendingProcessingId('')
+    }
+  }
+
+  const declinePendingPatientRequest = async (request) => {
+    if (!request?.id) return
+    if (!window.confirm(`Decline patient request for ${request.last_name}, ${request.first_name}?`)) return
+
+    setPendingProcessingId(request.id)
+    setError('')
+
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const actorId = authData?.user?.id ?? null
+
+      const { error: updateError } = await supabase
+        .from('pending_patient_registrations')
+        .update({
+          status: 'declined',
+          decided_by: actorId,
+          decided_at: new Date().toISOString(),
+        })
+        .eq('id', request.id)
+        .eq('status', 'pending')
+
+      if (updateError) throw updateError
+
+      await loadAll()
+      await recordSystemAudit({
+        action: 'pending_patient_request_declined',
+        entityType: 'pending_patient_registration',
+        entityId: request.id,
+        entityLabel: `${request.last_name}, ${request.first_name}`,
+        details: 'Declined pending patient request.',
+      })
+      showSuccess('Patient request declined successfully.')
+    } catch (declineError) {
+      setError(declineError?.message || 'Unable to decline patient request.')
+    } finally {
+      setPendingProcessingId('')
+    }
+  }
+
   const archiveRows = useMemo(() => {
     if (archiveType === 'patients') return archivePatients
     if (archiveType === 'users') return archiveUsers
@@ -1486,6 +1723,19 @@ function Admin() {
     inactiveSexFilter,
     inactiveSortBy,
   ])
+
+  const filteredPendingPatientRequests = useMemo(() => {
+    const query = pendingSearchTerm.trim().toLowerCase()
+    const source = query
+      ? pendingPatientRequests.filter((row) => (
+        `${row.last_name || ''}, ${row.first_name || ''}`.toLowerCase().includes(query)
+        || `${row.email || 'n/a'}`.toLowerCase().includes(query)
+        || `${row.requested_by_name || ''}`.toLowerCase().includes(query)
+      ))
+      : [...pendingPatientRequests]
+
+    return source.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  }, [pendingPatientRequests, pendingSearchTerm])
 
   const filteredArchiveRows = useMemo(() => {
     const query = archiveSearchTerm.trim().toLowerCase()
@@ -1660,6 +1910,7 @@ function Admin() {
 
   const usersPaging = paginateRows(filteredUsers, usersPage, usersRowsPerPage)
   const inactivePaging = paginateRows(filteredInactivePatients, inactivePage, inactiveRowsPerPage)
+  const pendingPaging = paginateRows(filteredPendingPatientRequests, pendingPage, pendingRowsPerPage)
   const archivePaging = paginateRows(filteredArchiveRows, archivePage, archiveRowsPerPage)
   const auditPaging = paginateRows(filteredAuditLogs, auditPage, auditRowsPerPage)
 
@@ -1881,6 +2132,9 @@ function Admin() {
           </button>
           <button type="button" className={`tab ${tab === 'inactive' ? 'active' : ''}`} onClick={() => { setTab('inactive'); setShowAddUser(false); setInactivePage(1); setInactivePageInput('1') }}>
             Inactive List
+          </button>
+          <button type="button" className={`tab ${tab === 'requests' ? 'active' : ''}`} onClick={() => { setTab('requests'); setShowAddUser(false); setPendingPage(1); setPendingPageInput('1') }}>
+            Patient Requests
           </button>
           <button type="button" className={`tab ${tab === 'archive' ? 'active' : ''}`} onClick={() => { setTab('archive'); setShowAddUser(false); setArchivePage(1); setArchivePageInput('1') }}>
             Archive List
@@ -2177,6 +2431,75 @@ function Admin() {
                 setPage: setInactivePage,
                 pageInput: inactivePageInput,
                 setPageInput: setInactivePageInput,
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        {tab === 'requests' ? (
+          <div className="records">
+            <div className="records-header admin-records-header">
+              <div>
+                <div className="records-toolbar">
+                  <div className="search-box">
+                    <span className="search-icon" aria-hidden />
+                    <input
+                      type="text"
+                      placeholder="Search by patient, email, or requester"
+                      value={pendingSearchTerm}
+                      onChange={(event) => {
+                        setPendingSearchTerm(event.target.value)
+                        setPendingPage(1)
+                        setPendingPageInput('1')
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="records-table pending-requests-table">
+              <div className="table-head">
+                <span>Submitted</span>
+                <span>Patient</span>
+                <span>Email</span>
+                <span>Sex / Age</span>
+                <span>Requested By</span>
+                <span>Action</span>
+              </div>
+              <div className="table-body">
+                {pendingPaging.pageRows.map((row) => {
+                  const isProcessing = pendingProcessingId === row.id
+                  return (
+                    <div key={row.id} className="table-row">
+                      <span>{formatDateTime(row.created_at)}</span>
+                      <span>{`${row.last_name}, ${row.first_name}`}</span>
+                      <span>{row.email || 'N/A'}</span>
+                      <span>{`${row.sex === 'Male' ? 'M' : row.sex === 'Female' ? 'F' : row.sex} / ${calculateAge(row.birth_date)}`}</span>
+                      <span>{row.requested_by_name || '-'}</span>
+                      <span className="row-actions">
+                        <button type="button" className="view" disabled={Boolean(pendingProcessingId)} onClick={() => openPendingRequestPreview(row)}>
+                          Preview
+                        </button>
+                        <button type="button" className="icon-btn danger" disabled={Boolean(pendingProcessingId)} title="Decline request" onClick={() => { void declinePendingPatientRequest(row) }}>
+                          {isProcessing ? '...' : 'X'}
+                        </button>
+                      </span>
+                    </div>
+                  )
+                })}
+                {!loading && filteredPendingPatientRequests.length === 0 ? <p>No pending patient requests found.</p> : null}
+              </div>
+            </div>
+            <div className="records-footer">
+              <span>Showing {pendingPaging.visibleStart}-{pendingPaging.visibleEnd} of {filteredPendingPatientRequests.length} entries</span>
+              {renderPaginationControls({
+                paging: pendingPaging,
+                rowsPerPage: pendingRowsPerPage,
+                setRowsPerPage: setPendingRowsPerPage,
+                setPage: setPendingPage,
+                pageInput: pendingPageInput,
+                setPageInput: setPendingPageInput,
               })}
             </div>
           </div>
@@ -2629,6 +2952,127 @@ function Admin() {
                 <button type="button" className="success-btn" onClick={() => { void saveUserEdit() }}>Update</button>
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {modal === 'preview-patient-request' && selected ? (
+        <div className="pr-modal procedures-modal admin-patient-request-modal">
+          <div className="pr-modal-head">
+            <h2>Patient Request Preview</h2>
+            <button type="button" onClick={closeModal}>X</button>
+          </div>
+          <div className="pr-modal-body">
+            {(() => {
+              const payload = selected.payload && typeof selected.payload === 'object' && !Array.isArray(selected.payload)
+                ? selected.payload
+                : {}
+              const medicalAnswers = payload.medical_history?.answers || {}
+              const medicalNotes = payload.medical_history?.notes || {}
+              const dentalAnswers = payload.dental_history?.answers || {}
+              const dentalNotes = payload.dental_history?.notes || {}
+              const isMinor = Boolean(payload.guardian_name || payload.guardian_mobile_number || payload.guardian_occupation || payload.guardian_office_address)
+
+              return (
+                <div className="preview-shell admin-request-preview-shell">
+                  <div className="preview-head">
+                    <span className="preview-kicker">Review First</span>
+                    <h2>{`${selected.last_name}, ${selected.first_name}`}</h2>
+                    <p>Check the submitted patient details before approving this request.</p>
+                  </div>
+
+                  <div className="preview-grid">
+                    <article className="preview-card">
+                      <h3>Patient Information</h3>
+                      <div className="preview-detail-grid">
+                        <p><strong>Submitted</strong><span>{formatDateTime(selected.created_at)}</span></p>
+                        <p><strong>Requested By</strong><span>{getDisplayValue(selected.requested_by_name, '-')}</span></p>
+                        <p><strong>Last Name</strong><span>{getDisplayValue(payload.last_name || selected.last_name)}</span></p>
+                        <p><strong>First Name</strong><span>{getDisplayValue(payload.first_name || selected.first_name)}</span></p>
+                        <p><strong>Middle Name</strong><span>{getDisplayValue(payload.middle_name)}</span></p>
+                        <p><strong>Suffix</strong><span>{getDisplayValue(payload.suffix)}</span></p>
+                        <p><strong>Birthdate</strong><span>{getDisplayValue(formatDateOnly(payload.birth_date || selected.birth_date))}</span></p>
+                        <p><strong>Age</strong><span>{calculateAge(payload.birth_date || selected.birth_date)}</span></p>
+                        <p><strong>Sex</strong><span>{getDisplayValue(payload.sex || selected.sex)}</span></p>
+                        <p><strong>Nickname</strong><span>{getDisplayValue(payload.nickname)}</span></p>
+                        <p><strong>Email</strong><span>{getDisplayValue(payload.email)}</span></p>
+                        <p><strong>Civil Status</strong><span>{getDisplayValue(payload.civil_status)}</span></p>
+                        <p><strong>Mobile Number</strong><span>{getDisplayValue(formatPhilippineMobileDisplay(payload.phone), 'N/A')}</span></p>
+                        <p><strong>Occupation</strong><span>{getDisplayValue(payload.occupation)}</span></p>
+                        <p className="preview-span-2"><strong>Current Address</strong><span>{getDisplayValue(payload.address)}</span></p>
+                        <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(payload.office_address)}</span></p>
+                      </div>
+
+                      {isMinor ? (
+                        <div className="preview-subsection">
+                          <h4>Guardian Details</h4>
+                          <div className="preview-detail-grid">
+                            <p><strong>Name</strong><span>{getDisplayValue(payload.guardian_name)}</span></p>
+                            <p><strong>Mobile</strong><span>{getDisplayValue(formatPhilippineMobileDisplay(payload.guardian_mobile_number), 'N/A')}</span></p>
+                            <p><strong>Occupation</strong><span>{getDisplayValue(payload.guardian_occupation)}</span></p>
+                            <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(payload.guardian_office_address)}</span></p>
+                          </div>
+                        </div>
+                      ) : null}
+                    </article>
+
+                    <article className="preview-card">
+                      <h3>Health Summary</h3>
+                      <div className="preview-detail-grid">
+                        <p className="preview-span-2"><strong>Health Conditions</strong><span>{summarizeHealthConditions(payload.health_conditions)}</span></p>
+                        <p className="preview-span-2"><strong>Allergies</strong><span>{summarizeAllergens(payload.allergen_info)}</span></p>
+                        <p><strong>Physician</strong><span>{getDisplayValue(payload.medical_history?.physician)}</span></p>
+                        <p><strong>Specialty</strong><span>{getDisplayValue(payload.medical_history?.specialty)}</span></p>
+                        <p className="preview-span-2"><strong>Physician Address</strong><span>{getDisplayValue(payload.medical_history?.address)}</span></p>
+                        <p><strong>Authorization</strong><span>{payload.authorization_accepted ? 'Accepted' : 'Not accepted'}</span></p>
+                        <p><strong>Request Source</strong><span>{getDisplayValue(selected.request_source, 'Add Patient Form')}</span></p>
+                      </div>
+                    </article>
+
+                    <article className="preview-card">
+                      <h3>Medical Questionnaire</h3>
+                      <div className="preview-detail-grid">
+                        {Object.keys(medicalAnswers).length > 0 ? Object.keys(medicalAnswers).map((key) => (
+                          <p key={`medical-${key}`} className="preview-span-2">
+                            <strong>{`Question ${Number(key) + 1}`}</strong>
+                            <span>{formatHistoryAnswer(medicalAnswers[key], medicalNotes[key])}</span>
+                          </p>
+                        )) : (
+                          <p className="preview-span-2"><strong>Status</strong><span>No medical answers recorded.</span></p>
+                        )}
+                      </div>
+                    </article>
+
+                    <article className="preview-card">
+                      <h3>Dental History</h3>
+                      <div className="preview-detail-grid">
+                        <p><strong>Previous Dentist</strong><span>{getDisplayValue(payload.dental_history?.previous)}</span></p>
+                        <p><strong>Last Exam</strong><span>{getDisplayValue(formatDateOnly(payload.dental_history?.lastExam))}</span></p>
+                        <p className="preview-span-2"><strong>Consultation Reason</strong><span>{getDisplayValue(payload.dental_history?.reason)}</span></p>
+                        {Object.keys(dentalAnswers).length > 0 ? Object.keys(dentalAnswers).map((key) => (
+                          <p key={`dental-${key}`} className="preview-span-2">
+                            <strong>{`Question ${Number(key) + 1}`}</strong>
+                            <span>{formatHistoryAnswer(dentalAnswers[key], dentalNotes[key])}</span>
+                          </p>
+                        )) : (
+                          <p className="preview-span-2"><strong>Status</strong><span>No dental answers recorded.</span></p>
+                        )}
+                      </div>
+                    </article>
+                  </div>
+
+                  <div className="modal-actions">
+                    <button type="button" className="ghost" onClick={closeModal} disabled={Boolean(pendingProcessingId)}>Close</button>
+                    <button type="button" className="danger-btn" onClick={() => { void declinePendingPatientRequest(selected) }} disabled={Boolean(pendingProcessingId)}>
+                      Decline
+                    </button>
+                    <button type="button" className="success-btn" onClick={() => { void approvePendingPatientRequest(selected) }} disabled={Boolean(pendingProcessingId)}>
+                      {pendingProcessingId === selected.id ? 'Approving...' : 'Approve Request'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
           </div>
         </div>
       ) : null}

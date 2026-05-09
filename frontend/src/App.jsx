@@ -225,7 +225,7 @@ function ProtectedLayout({ onLogout, navItems, role, profile, sessionUser, onPro
       <main className={`dashboard-main ${isPatientRecordsRoute ? 'dashboard-main-no-scroll' : ''}`}>
         <Routes>
           <Route path="home" element={<Home currentProfile={profile} />} />
-          <Route path="records" element={<PatientRecords />} />
+          <Route path="records" element={<PatientRecords currentRole={role} currentProfile={profile} />} />
           <Route path="records/:id" element={<PatientRecordDetails currentRole={role} currentProfile={profile} />} />
           <Route path="add-patient" element={<AddPatient />} />
           <Route path="procedure" element={<Procedures currentProfile={profile} />} />
