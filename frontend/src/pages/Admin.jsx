@@ -2386,7 +2386,7 @@ function Admin() {
                   >
                     {AUDIT_CATEGORY_OPTIONS.map((option) => (
                       <option key={option.value} value={option.value}>
-                        {option.label} ({auditCategoryCounts[option.value] ?? 0})
+                        {option.label}
                       </option>
                     ))}
                   </select>

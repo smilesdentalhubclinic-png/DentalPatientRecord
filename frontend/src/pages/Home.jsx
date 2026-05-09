@@ -69,6 +69,33 @@ const getMetricChartTitle = (metricKey) => {
   return 'Patient Visits Chart'
 }
 
+const getChartTooltipLines = (metricKey, item) => {
+  if (metricKey === 'registrations') {
+    return [
+      `Registrations: ${formatCompactNumber(item.registrations)}`,
+    ]
+  }
+
+  if (metricKey === 'revenue') {
+    return [
+      `Revenue: ${formatCompactCurrency(item.revenue)}`,
+    ]
+  }
+
+  if (metricKey === 'services') {
+    return [
+      `Service entries: ${formatCompactNumber(item.serviceCount)}`,
+    ]
+  }
+
+  return [
+    `Patient visits: ${formatCompactNumber(item.visits)}`,
+    `Unique patients: ${formatCompactNumber(item.uniquePatients)}`,
+    `Male: ${formatCompactNumber(item.male)}`,
+    `Female: ${formatCompactNumber(item.female)}`,
+  ]
+}
+
 const getStaffFullName = (profile) => (
   [
     `${profile?.first_name || ''}`.trim(),
@@ -687,11 +714,9 @@ function Home({ currentProfile }) {
                                 {hoveredKey === item.key ? (
                                   <div className="weekly-bar-tooltip">
                                     <strong>{item.dateLabel}</strong>
-                                    <span>Patient visits: {formatCompactNumber(item.visits)}</span>
-                                    <span>Unique patients: {formatCompactNumber(item.uniquePatients)}</span>
-                                    <span>Registrations: {formatCompactNumber(item.registrations)}</span>
-                                    <span>Revenue: {formatCompactCurrency(item.revenue)}</span>
-                                    <span>Service entries: {formatCompactNumber(item.serviceCount)}</span>
+                                    {getChartTooltipLines(activeMetric, item).map((line) => (
+                                      <span key={`${item.key}-${line}`}>{line}</span>
+                                    ))}
                                   </div>
                                 ) : null}
                               </div>

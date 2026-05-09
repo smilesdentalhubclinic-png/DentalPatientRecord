@@ -1049,6 +1049,11 @@ body {
 
 .analytics-trend-card .analytics-card-head > div:first-child {
   text-align: left;
+  width: 100%;
+}
+
+.analytics-trend-card .analytics-card-head h2 {
+  text-align: left;
 }
 
 .analytics-trend-card .analytics-card-head > div:first-child .muted {

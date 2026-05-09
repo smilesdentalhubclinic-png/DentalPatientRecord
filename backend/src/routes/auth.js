@@ -1605,6 +1605,9 @@ router.post('/logout', async (req, res) => {
       });
     }
 
+    const logoutReason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    const auditDetails = logoutReason || 'User logged out.';
+
     const { userId, sessionId } = getSessionClaims(accessToken);
     const serviceClient = createSupabaseClient({ useServiceRole: true });
     const { data: currentUserData } = await serviceClient.auth.admin.getUserById(userId);
@@ -1619,10 +1622,13 @@ router.post('/logout', async (req, res) => {
       entityType: 'auth_session',
       entityId: sessionId || null,
       entityLabel: currentUserData?.user?.email || userId,
-      details: 'User logged out.',
+      details: auditDetails,
       actorUserId: userId,
       actorIdentifier: currentUserData?.user?.email || '',
-      metadata: { sessionId: sessionId || null },
+      metadata: {
+        sessionId: sessionId || null,
+        logoutReason: logoutReason || 'manual',
+      },
     });
 
     return res.json({ message: 'Logged out.' });

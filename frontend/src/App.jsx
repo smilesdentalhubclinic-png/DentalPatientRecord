@@ -337,7 +337,7 @@ function AppRoutes() {
     return true
   }, [])
 
-  const signOutAndRedirect = useCallback(async ({ message = '', redirectPath = '/login' } = {}) => {
+  const signOutAndRedirect = useCallback(async ({ message = '', redirectPath = '/login', auditReason = '' } = {}) => {
     if (!supabase) return
 
     if (inactivityTimerRef.current) {
@@ -352,8 +352,10 @@ function AppRoutes() {
         await fetch('/api/auth/logout', {
           method: 'POST',
           headers: {
+            'Content-Type': 'application/json',
             Authorization: `Bearer ${accessToken}`,
           },
+          body: JSON.stringify(auditReason ? { reason: auditReason } : {}),
         })
       } catch {
         // Best-effort cleanup only; local logout should still continue.
@@ -561,6 +563,7 @@ function AppRoutes() {
       inactivityTimerRef.current = window.setTimeout(() => {
         void signOutAndRedirect({
           message: 'You were logged out after 15 minutes of inactivity.',
+          auditReason: 'Auto logout due to 15 minutes of inactivity.',
         })
       }, INACTIVITY_LOGOUT_MS)
     }
