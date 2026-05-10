@@ -10,6 +10,8 @@ import { isValidLetterName, sanitizeLetterNameInput } from '../utils/nameValidat
 import { findExistingPatientRecord, isPatientDuplicateError } from '../utils/patientDuplicateCheck'
 import { recordSystemAudit } from '../utils/auditLog'
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
+
 const HEALTH = [
   'Low Blood Pressure',
   'Severe Headaches',
@@ -248,6 +250,22 @@ const initialAllergens = () => ({
   values: createBooleanMap(ALLERGENS),
   others: '',
 })
+
+const normalizePatientEmail = (value = '') => `${value || ''}`.trim().toLowerCase()
+
+const maskEmailAddress = (value = '') => {
+  const normalized = normalizePatientEmail(value)
+  if (!normalized || !normalized.includes('@')) return 'the registered email'
+
+  const [localPart, domainPart] = normalized.split('@')
+  if (!localPart || !domainPart) return normalized
+
+  const visibleLocal = localPart.length <= 2
+    ? `${localPart.slice(0, 1)}*`
+    : `${localPart.slice(0, 2)}${'*'.repeat(Math.max(1, localPart.length - 2))}`
+
+  return `${visibleLocal}@${domainPart}`
+}
 
 const MONTH_ABBR = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.']
 
@@ -605,6 +623,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState('')
   const [patient, setPatient] = useState(initialPatient)
+  const [registeredPatientEmail, setRegisteredPatientEmail] = useState('')
   const [health, setHealth] = useState(() => createBooleanMap(HEALTH))
   const [healthOtherText, setHealthOtherText] = useState('')
   const [allergens, setAllergens] = useState(initialAllergens)
@@ -640,6 +659,12 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const [exportPreviewHtml, setExportPreviewHtml] = useState('')
   const [birthdateInput, setBirthdateInput] = useState('')
   const [lastExamInput, setLastExamInput] = useState('')
+  const [pendingDetailsPatch, setPendingDetailsPatch] = useState(null)
+  const [patientUpdateOtp, setPatientUpdateOtp] = useState('')
+  const [patientUpdateVerificationMessage, setPatientUpdateVerificationMessage] = useState('')
+  const [patientUpdateVerificationError, setPatientUpdateVerificationError] = useState('')
+  const [hasPendingAdminRequest, setHasPendingAdminRequest] = useState(false)
+  const [pendingPatchBaseSnapshot, setPendingPatchBaseSnapshot] = useState(null)
   const exportPreviewFrameRef = useRef(null)
   const birthdatePickerRef = useRef(null)
   const lastExamPickerRef = useRef(null)
@@ -721,6 +746,72 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       notes: { ...(patientSnapshot.medicalHistory.notes || {}) },
     })
   }, [patientSnapshot])
+
+  const PATCH_FIELD_LABELS = {
+    first_name: 'First Name', last_name: 'Last Name', middle_name: 'Middle Name',
+    suffix: 'Suffix', birth_date: 'Birthdate', sex: 'Sex', nickname: 'Nickname',
+    email: 'Email', civil_status: 'Civil Status', phone: 'Mobile Number',
+    occupation: 'Occupation', address: 'Current Address', office_address: 'Office Address',
+    guardian_name: 'Guardian Name', guardian_mobile_number: 'Guardian Mobile',
+    guardian_occupation: 'Guardian Occupation', guardian_office_address: 'Guardian Office Address',
+    authorization_accepted: 'Authorization', health_conditions: 'Health Status',
+    allergen_info: 'Allergen Information', dental_history: 'Dental History',
+    medical_history: 'Medical History',
+  }
+
+  const COMPLEX_PATCH_KEYS = new Set(['health_conditions', 'allergen_info', 'dental_history', 'medical_history'])
+  const SKIP_PATCH_KEYS = new Set(['patient_id', 'registered_email', 'updated_by'])
+
+  const buildChangeSummary = useCallback((patch, baseSnap) => (
+    Object.keys(patch || {})
+      .filter((k) => !SKIP_PATCH_KEYS.has(k))
+      .map((k) => ({
+        label: PATCH_FIELD_LABELS[k] || k,
+        oldValue: COMPLEX_PATCH_KEYS.has(k) ? '(previous values)' : String(baseSnap?.[k] ?? '—'),
+        newValue: COMPLEX_PATCH_KEYS.has(k) ? '(updated)' : String(patch[k] ?? '—'),
+      }))
+  ), [])
+
+  const buildDetailsBaseSnapshot = useCallback((snap) => {
+    if (!snap) return null
+    const p = snap.patient
+    return {
+      first_name: p?.firstName ?? null, last_name: p?.lastName ?? null,
+      middle_name: p?.middleName ?? null, suffix: p?.suffix ?? null,
+      sex: p?.sex ?? null, birth_date: p?.birthdate ?? null,
+      nickname: p?.nickname ?? null, email: p?.email ?? null,
+      civil_status: p?.civilStatus ?? null, phone: p?.mobile ?? null,
+      occupation: p?.occupation ?? null, address: p?.address ?? null,
+      office_address: p?.officeAddress ?? null, guardian_name: p?.guardianName ?? null,
+      guardian_mobile_number: p?.guardianMobileNumber ?? null,
+      guardian_occupation: p?.guardianOccupation ?? null,
+      guardian_office_address: p?.guardianOfficeAddress ?? null,
+      authorization_accepted: p?.authorizationAccepted ?? false,
+    }
+  }, [])
+
+  const clearPatientUpdateVerificationState = useCallback(() => {
+    setPendingDetailsPatch(null)
+    setPendingPatchBaseSnapshot(null)
+    setPatientUpdateOtp('')
+    setPatientUpdateVerificationMessage('')
+    setPatientUpdateVerificationError('')
+    setHasPendingAdminRequest(false)
+  }, [])
+
+  useEffect(() => {
+    if (modal !== 'details-method-choice') return
+    const check = async () => {
+      const { count } = await supabase
+        .from('pending_patient_registrations')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'pending')
+        .eq('request_source', 'patient_details_update')
+        .filter('payload->>patient_id', 'eq', id)
+      setHasPendingAdminRequest((count || 0) > 0)
+    }
+    void check()
+  }, [modal, id])
 
   const fetchStaffNames = useCallback(async (userIds) => {
     const ids = [...new Set((userIds ?? []).filter(Boolean))]
@@ -824,6 +915,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       createdBy: row.created_by || '',
       updatedBy: row.updated_by || '',
     }
+    setRegisteredPatientEmail(row.email || '')
 
     const nextHealth = createBooleanMap(HEALTH)
     const rawHealth = row.health_conditions && typeof row.health_conditions === 'object' ? row.health_conditions : {}
@@ -1343,6 +1435,17 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   )
 
   const close = () => {
+    if (modal === 'details-verification') {
+      setPatientUpdateOtp('')
+      setPatientUpdateVerificationError('')
+      setModal('details-method-choice')
+      return
+    }
+    if (modal === 'details-method-choice') {
+      clearPatientUpdateVerificationState()
+      setModal(null)
+      return
+    }
     if (['details', 'health', 'allergen', 'dental-history', 'medical-history'].includes(modal)) {
       restoreSnapshot()
     }
@@ -1359,6 +1462,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     setDentalRecordForm(cloneDentalRecord(dentalRecord))
     setPendingDentalSave(null)
     setExportPreviewHtml('')
+    clearPatientUpdateVerificationState()
     setModal(null)
   }
 
@@ -1620,7 +1724,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const updatePatientSection = useCallback(async (patch) => {
     if (patient.isActive === false) {
       setError(INACTIVE_PATIENT_UPDATE_MESSAGE)
-      return
+      return false
     }
 
     setIsSaving(true)
@@ -1651,18 +1755,209 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
         metadata: { updatedFields: Object.keys(patch || {}) },
       })
 
+      clearPatientUpdateVerificationState()
       setModal(null)
       await loadPatient()
+      return true
     } catch (updateError) {
       setError(
         isPatientDuplicateError(updateError)
           ? 'A patient with the same name, sex, and birthdate already exists.'
           : normalizeError(updateError, 'Unable to update patient information.'),
       )
+      return false
     } finally {
       setIsSaving(false)
     }
-  }, [id, loadPatient, patient.isActive])
+  }, [clearPatientUpdateVerificationState, id, loadPatient, patient.isActive, patient.firstName, patient.lastName])
+
+  const requestPatientUpdateVerificationCode = useCallback(async () => {
+    setIsSaving(true)
+    setError('')
+    setPatientUpdateVerificationError('')
+
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+      const accessToken = sessionData?.session?.access_token || ''
+
+      if (sessionError || !accessToken) {
+        throw new Error('Unable to verify your session. Please log in again.')
+      }
+
+      const response = await fetch('/api/auth/request-patient-update-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          patientId: id,
+          changes: buildChangeSummary(pendingDetailsPatch, pendingPatchBaseSnapshot),
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Unable to send verification code.')
+      }
+
+      setPatientUpdateOtp('')
+      setPatientUpdateVerificationMessage(
+        `Enter the 6-digit OTP sent to ${maskEmailAddress(payload?.email || registeredPatientEmail)} before saving the patient details.`,
+      )
+      setModal('details-verification')
+      return true
+    } catch (requestError) {
+      setError(requestError?.message || 'Unable to send verification code.')
+      return false
+    } finally {
+      setIsSaving(false)
+    }
+  }, [id, registeredPatientEmail, pendingDetailsPatch, pendingPatchBaseSnapshot, buildChangeSummary])
+
+  const submitPatientUpdateAdminRequest = useCallback(async () => {
+    if (!pendingDetailsPatch) {
+      setPatientUpdateVerificationError('No pending patient changes were found.')
+      return
+    }
+
+    setIsSaving(true)
+    setError('')
+    setPatientUpdateVerificationError('')
+
+    try {
+      const requestPayload = {
+        patient_id: id,
+        ...pendingDetailsPatch,
+        registered_email: normalizePatientEmail(registeredPatientEmail) || null,
+      }
+
+      const { data: insertedRequest, error: insertError } = await supabase
+        .from('pending_patient_registrations')
+        .insert({
+          first_name: pendingDetailsPatch.first_name ?? toTitleCase(patient.firstName),
+          last_name: pendingDetailsPatch.last_name ?? toTitleCase(patient.lastName),
+          middle_name: pendingDetailsPatch.middle_name ?? (patient.middleName ? toTitleCase(patient.middleName) : null),
+          suffix: pendingDetailsPatch.suffix ?? (patient.suffix || null),
+          sex: pendingDetailsPatch.sex ?? patient.sex,
+          birth_date: pendingDetailsPatch.birth_date ?? patient.birthdate ?? null,
+          email: pendingDetailsPatch.email ?? patient.email ?? null,
+          payload: requestPayload,
+          request_source: 'patient_details_update',
+        })
+        .select('id')
+        .single()
+
+      if (insertError) throw insertError
+
+      await recordSystemAudit({
+        action: 'patient_update_admin_request_created',
+        entityType: 'pending_patient_registration',
+        entityId: insertedRequest?.id || null,
+        entityLabel: `${pendingDetailsPatch.last_name || ''}, ${pendingDetailsPatch.first_name || ''}`.trim().replace(/^, /, ''),
+        details: 'Submitted patient update request for admin approval.',
+        metadata: {
+          patientId: id,
+          requestSource: 'patient_details_update',
+        },
+      })
+
+      clearPatientUpdateVerificationState()
+      await loadPatient()
+      setModal('details-request-success')
+    } catch (requestError) {
+      setPatientUpdateVerificationError(
+        isPatientDuplicateError(requestError)
+          ? 'A similar pending request already exists for this patient.'
+          : (requestError?.message || 'Unable to submit patient update request.'),
+      )
+    } finally {
+      setIsSaving(false)
+    }
+  }, [clearPatientUpdateVerificationState, id, loadPatient, patient, pendingDetailsPatch, registeredPatientEmail])
+
+  const verifyPatientUpdateCodeAndSave = useCallback(async () => {
+    if (!pendingDetailsPatch) {
+      setPatientUpdateVerificationError('No pending patient changes were found.')
+      return
+    }
+
+    if (!/^\d{6}$/.test(patientUpdateOtp.trim())) {
+      setPatientUpdateVerificationError('Enter the 6-digit OTP from the registered patient email.')
+      return
+    }
+
+    setIsSaving(true)
+    setError('')
+    setPatientUpdateVerificationError('')
+
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+      const accessToken = sessionData?.session?.access_token || ''
+
+      if (sessionError || !accessToken) {
+        throw new Error('Unable to verify your session. Please log in again.')
+      }
+
+      const response = await fetch('/api/auth/verify-patient-update-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          patientId: id,
+          code: patientUpdateOtp.trim(),
+        }),
+      })
+
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Invalid verification code.')
+      }
+
+      const patchedFields = Object.keys(pendingDetailsPatch).filter((k) => !['patient_id', 'registered_email', 'updated_by'].includes(k))
+      if (pendingPatchBaseSnapshot && patchedFields.length > 0) {
+        const { data: currentDbRow } = await supabase
+          .from('patients')
+          .select(patchedFields.join(', '))
+          .eq('id', id)
+          .eq('is_active', true)
+          .maybeSingle()
+        if (currentDbRow) {
+          const conflictFields = patchedFields.filter((field) => (
+            JSON.stringify(currentDbRow[field] ?? null) !== JSON.stringify(pendingPatchBaseSnapshot[field] ?? null)
+          ))
+          if (conflictFields.length > 0) {
+            const labels = conflictFields.map((f) => PATCH_FIELD_LABELS[f] || f).join(', ')
+            setPatientUpdateVerificationError(
+              `Conflict detected — ${labels} was updated by someone else while you were waiting. Please close, review the current record, and try again.`,
+            )
+            setIsSaving(false)
+            return
+          }
+        }
+      }
+
+      const didSave = await updatePatientSection(pendingDetailsPatch)
+      if (didSave) {
+        const { data: authData } = await supabase.auth.getUser()
+        const actorId = authData?.user?.id ?? null
+        await supabase
+          .from('pending_patient_registrations')
+          .update({ status: 'declined', decided_by: actorId, decided_at: new Date().toISOString() })
+          .eq('status', 'pending')
+          .eq('request_source', 'patient_details_update')
+          .filter('payload->>patient_id', 'eq', id)
+      } else {
+        setModal('details-verification')
+      }
+    } catch (verifyError) {
+      setPatientUpdateVerificationError(verifyError?.message || 'Unable to verify the patient update code.')
+    } finally {
+      setIsSaving(false)
+    }
+  }, [id, patientUpdateOtp, pendingDetailsPatch, updatePatientSection])
 
   const saveDetails = async () => {
     if (!patient.firstName.trim() || !patient.lastName.trim()) {
@@ -1725,7 +2020,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       return
     }
 
-    await updatePatientSection({
+    const nextDetailsPatch = {
       first_name: toTitleCase(patient.firstName.trim()),
       last_name: toTitleCase(patient.lastName.trim()),
       middle_name: toTitleCase(patient.middleName.trim()) || null,
@@ -1746,11 +2041,40 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       guardian_occupation: toTitleCase(patient.guardianOccupation.trim()) || null,
       guardian_office_address: toTitleCase(patient.guardianOfficeAddress.trim()) || null,
       authorization_accepted: patient.authorizationAccepted,
-    })
+    }
+
+    setPendingDetailsPatch(nextDetailsPatch)
+    setPendingPatchBaseSnapshot(buildDetailsBaseSnapshot(patientSnapshot))
+    setPatientUpdateVerificationError('')
+    setPatientUpdateOtp('')
+    setPatientUpdateVerificationMessage('')
+    setModal('details-method-choice')
   }
 
+  const initiateSectionSave = useCallback(async (sectionPatch) => {
+    setPendingDetailsPatch(sectionPatch)
+    const base = {}
+    if ('health_conditions' in sectionPatch && patientSnapshot) {
+      base.health_conditions = { ...patientSnapshot.health, othersText: patientSnapshot.healthOtherText }
+    }
+    if ('allergen_info' in sectionPatch && patientSnapshot) {
+      base.allergen_info = { ...patientSnapshot.allergens }
+    }
+    if ('dental_history' in sectionPatch && patientSnapshot) {
+      base.dental_history = { ...patientSnapshot.dentalHistory }
+    }
+    if ('medical_history' in sectionPatch && patientSnapshot) {
+      base.medical_history = { ...patientSnapshot.medicalHistory }
+    }
+    setPendingPatchBaseSnapshot(Object.keys(base).length ? base : null)
+    setPatientUpdateVerificationError('')
+    setPatientUpdateOtp('')
+    setPatientUpdateVerificationMessage('')
+    setModal('details-method-choice')
+  }, [patientSnapshot])
+
   const saveHealth = async () => {
-    await updatePatientSection({
+    await initiateSectionSave({
       health_conditions: {
         ...health,
         othersText: health.Others ? toTitleCase(healthOtherText.trim()) : '',
@@ -1759,7 +2083,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const saveAllergens = async () => {
-    await updatePatientSection({
+    await initiateSectionSave({
       allergen_info: {
         ...allergens,
         others: toTitleCase(allergens.others || ''),
@@ -1768,7 +2092,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const saveDentalHistory = async () => {
-    await updatePatientSection({
+    await initiateSectionSave({
       dental_history: {
         ...dentalHistory,
         previous: toTitleCase(dentalHistory.previous || ''),
@@ -1781,7 +2105,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   }
 
   const saveMedicalHistory = async () => {
-    await updatePatientSection({
+    await initiateSectionSave({
       medical_history: {
         ...medicalHistory,
         physician: toTitleCase(medicalHistory.physician || ''),
@@ -3053,6 +3377,118 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
               <label className="span-2">Guardian Office Address<input type="text" value={patient.guardianOfficeAddress} onChange={(event) => setPatient((previous) => ({ ...previous, guardianOfficeAddress: event.target.value }))} /></label>
             </div>
             <div className="modal-actions"><button type="button" className="danger-btn" onClick={close}>Cancel</button><button type="button" className="success-btn" onClick={() => { void saveDetails() }} disabled={isSaving}>Save</button></div>
+          </div>
+        </div>
+      ) : null}
+
+      {modal === 'details-method-choice' ? (
+        <div className="pr-modal procedures-modal patient-update-method-modal">
+          <div className="pr-modal-head">
+            <h2>Submit Patient Update</h2>
+            <button type="button" onClick={close}>X</button>
+          </div>
+          <div className="pr-modal-body">
+            {hasPendingAdminRequest ? (
+              <div className="update-method-conflict-warning">
+                <strong>⚠️ Pending Admin Request Exists</strong>
+                <p>A request for this patient is already waiting for admin approval. If you send an OTP and save directly, that pending request will be automatically cancelled to prevent conflicting updates.</p>
+              </div>
+            ) : null}
+            <p className="update-method-intro">Choose how you want to submit this patient update.</p>
+            <div className="update-method-options">
+              {EMAIL_PATTERN.test(normalizePatientEmail(registeredPatientEmail)) ? (
+                <button
+                  type="button"
+                  className="update-method-option"
+                  disabled={isSaving}
+                  onClick={() => { void requestPatientUpdateVerificationCode() }}
+                >
+                  <span className="update-method-icon">✉️</span>
+                  <span className="update-method-label">Send OTP to Email</span>
+                  <small className="update-method-desc">A 6-digit code will be sent to the patient's registered email for verification.</small>
+                </button>
+              ) : (
+                <div className="update-method-option update-method-option-disabled">
+                  <span className="update-method-icon">✉️</span>
+                  <span className="update-method-label">Send OTP to Email</span>
+                  <small className="update-method-desc">Not available — no registered email found for this patient.</small>
+                </div>
+              )}
+              <button
+                type="button"
+                className="update-method-option"
+                disabled={isSaving}
+                onClick={() => { void submitPatientUpdateAdminRequest() }}
+              >
+                <span className="update-method-icon">🛡️</span>
+                <span className="update-method-label">Request Admin Approval</span>
+                <small className="update-method-desc">Send this update to Admin for review and approval. No OTP required.</small>
+              </button>
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="ghost" onClick={close} disabled={isSaving}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {modal === 'details-verification' ? (
+        <div className="pr-modal add-patient-feedback-modal patient-update-verify-modal">
+          <div className="pr-modal-head">
+            <h2>Verify Patient Update</h2>
+            <button type="button" onClick={close}>X</button>
+          </div>
+          <div className="pr-modal-body add-patient-feedback-body patient-update-verify-body">
+            <p>
+              {patientUpdateVerificationMessage || 'Enter the OTP sent to the patient email before saving the updated details.'}
+            </p>
+            {EMAIL_PATTERN.test(normalizePatientEmail(registeredPatientEmail)) ? (
+              <label className="verification-code-field">
+                OTP Code
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={patientUpdateOtp}
+                  onChange={(event) => {
+                    setPatientUpdateOtp(event.target.value.replace(/\D/g, '').slice(0, 6))
+                    setPatientUpdateVerificationError('')
+                  }}
+                  placeholder="Enter 6-digit code"
+                />
+              </label>
+            ) : null}
+            {patientUpdateVerificationError ? (
+              <p className="verification-status verification-status-error">{patientUpdateVerificationError}</p>
+            ) : null}
+            {!patientUpdateVerificationError && patientUpdateVerificationMessage ? (
+              <p className="verification-status verification-status-info">{patientUpdateVerificationMessage}</p>
+            ) : null}
+            <p className="patient-update-request-note">
+              If the registered email is missing or can no longer be accessed, send this update to Admin for review and approval.
+            </p>
+            <div className="modal-actions patient-update-verify-actions">
+              <button type="button" className="danger-btn" onClick={close} disabled={isSaving}>Back</button>
+              {EMAIL_PATTERN.test(normalizePatientEmail(registeredPatientEmail)) ? (
+                <button type="button" className="ghost" onClick={() => { void requestPatientUpdateVerificationCode() }} disabled={isSaving}>Resend OTP</button>
+              ) : null}
+              <button type="button" className="ghost" onClick={() => { void submitPatientUpdateAdminRequest() }} disabled={isSaving}>Request Admin Change</button>
+              {EMAIL_PATTERN.test(normalizePatientEmail(registeredPatientEmail)) ? (
+                <button type="button" className="success-btn" onClick={() => { void verifyPatientUpdateCodeAndSave() }} disabled={isSaving}>Verify &amp; Save</button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {modal === 'details-request-success' ? (
+        <div className="pr-modal procedures-modal success-modal patient-update-success-modal">
+          <div className="pr-modal-head"><h2>Success</h2></div>
+          <div className="pr-modal-body">
+            <p>Patient update request sent to Admin for approval.</p>
+            <div className="modal-actions center">
+              <button type="button" className="success-btn" onClick={close}>OK</button>
+            </div>
           </div>
         </div>
       ) : null}

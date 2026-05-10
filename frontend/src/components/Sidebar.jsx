@@ -64,7 +64,13 @@ function renderNavIcon(itemId) {
   )
 }
 
-function Sidebar({ onLogout, navItems, isLogoutModalOpen = false }) {
+const ROLE_LABELS = {
+  admin: 'Admin',
+  receptionist: 'Receptionist',
+  associate_dentist: 'Associate Dentist',
+}
+
+function Sidebar({ onLogout, navItems, isLogoutModalOpen = false, role }) {
   const location = useLocation()
   const navigate = useNavigate()
   const profileItem = (navItems ?? []).find((item) => item.id === 'settings')
@@ -201,8 +207,13 @@ function Sidebar({ onLogout, navItems, isLogoutModalOpen = false }) {
                   <span className="nav-icon" aria-hidden="true">
                     <ProfileIcon />
                   </span>
+                  <span className="nav-item-profile-text">
                     <span className="nav-item-label">My Account</span>
+                    {ROLE_LABELS[role] ? (
+                      <span className="nav-item-role-badge">{ROLE_LABELS[role]}</span>
+                    ) : null}
                   </span>
+                </span>
               </span>
             </NavLink>
           ) : null}

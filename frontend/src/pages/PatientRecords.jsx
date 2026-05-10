@@ -11,6 +11,30 @@ const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
 const MONTH_ABBR = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.']
 const PATIENT_RECORDS_UI_STORAGE_PREFIX = `${UI_SESSION_STORAGE_PREFIX}patientRecords.`
+const MANILA_UTC_OFFSET = '+08:00'
+const MANILA_TIME_ZONE = 'Asia/Manila'
+
+const getManilaDayRange = (reference = new Date()) => {
+  const dateParts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: MANILA_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(reference)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  )
+
+  const dateKey = `${dateParts.year}-${dateParts.month}-${dateParts.day}`
+
+  return {
+    dateKey,
+    startIso: new Date(`${dateKey}T00:00:00.000${MANILA_UTC_OFFSET}`).toISOString(),
+    endIso: new Date(`${dateKey}T23:59:59.999${MANILA_UTC_OFFSET}`).toISOString(),
+  }
+}
 
 const formatDate = (value) => {
   if (!value) return '-'
@@ -98,7 +122,7 @@ const fetchStaffNames = async (userIds) => {
   return Object.fromEntries((data ?? []).map((row) => [row.user_id, formatStaffDisplayName(row)]))
 }
 
-function PatientRecords({ currentRole }) {
+function PatientRecords({ currentRole, queueEnabled = true }) {
   const navigate = useNavigate()
   const [records, setRecords] = useState([])
   const [queueEntries, setQueueEntries] = useState([])
@@ -119,7 +143,7 @@ function PatientRecords({ currentRole }) {
   const [queueActionKey, setQueueActionKey] = useState('')
   const [queueStatusViewFilter, setQueueStatusViewFilter] = useSessionStorageState(
     `${PATIENT_RECORDS_UI_STORAGE_PREFIX}queueStatusViewFilter`,
-    'all',
+    'pending',
   )
   const [acknowledgedAcceptedQueueIds, setAcknowledgedAcceptedQueueIds] = useSessionStorageState(
     `${PATIENT_RECORDS_UI_STORAGE_PREFIX}acknowledgedAcceptedQueueIds`,
@@ -133,12 +157,16 @@ function PatientRecords({ currentRole }) {
   const [registeredToFilter, setRegisteredToFilter] = useState('')
 
   const canAcceptQueue = currentRole === 'admin' || currentRole === 'associate_dentist'
+  const canManageQueue = Boolean(currentRole)
 
   const loadQueueEntries = async () => {
+    const todayQueueRange = getManilaDayRange()
     const { data, error: queueError } = await supabase
       .from('patient_queue_entries')
       .select('id, patient_id, queue_status, queued_by, queued_at, accepted_by, accepted_at, patients(id, patient_code, first_name, last_name, sex, birth_date)')
       .in('queue_status', ['pending', 'accepted'])
+      .gte('queued_at', todayQueueRange.startIso)
+      .lte('queued_at', todayQueueRange.endIso)
       .order('queued_at', { ascending: true })
 
     if (queueError) throw queueError
@@ -396,30 +424,25 @@ function PatientRecords({ currentRole }) {
       const { data: authData } = await supabase.auth.getUser()
       const actorId = authData?.user?.id ?? null
 
-      const { data: insertedEntry, error: insertError } = await supabase
+      const { error: insertError } = await supabase
         .from('patient_queue_entries')
         .insert({
           patient_id: row.id,
           queued_by: actorId,
         })
-        .select('id')
-        .single()
 
       if (insertError) throw insertError
-
-      await recordSystemAudit({
-        action: 'patient_added_to_queue',
-        entityType: 'patient_queue_entry',
-        entityId: insertedEntry.id,
-        entityLabel: `${row.last_name}, ${row.first_name}`,
-        details: 'Added patient to queue.',
-        metadata: { patientId: row.id },
-      })
 
       await loadRecords()
     } catch (queueError) {
       const queueErrorText = `${queueError?.message || ''} ${queueError?.details || ''}`
-      if (queueError?.code === '23505' && queueErrorText.includes('idx_patient_queue_entries_single_pending_patient')) {
+      if (
+        queueError?.code === '23505'
+        && (
+          queueErrorText.includes('idx_patient_queue_entries_single_pending_patient_day')
+          || queueErrorText.includes('idx_patient_queue_entries_single_pending_patient')
+        )
+      ) {
         setError('That patient is already in the queue.')
       } else {
         setError(queueError?.message || 'Unable to add patient to the queue.')
@@ -455,20 +478,38 @@ function PatientRecords({ currentRole }) {
 
       if (updateError) throw updateError
 
-      await recordSystemAudit({
-        action: 'patient_queue_accepted',
-        entityType: 'patient_queue_entry',
-        entityId: entry.id,
-        entityLabel: `${entry.patient?.last_name || ''}, ${entry.patient?.first_name || ''}`.trim().replace(/^,\s*/, ''),
-        details: 'Accepted patient from queue.',
-        metadata: { patientId: entry.patientId },
-      })
-
       await loadRecords()
       setShowQueueModal(false)
       navigate(`/records/${entry.patientId}`)
     } catch (queueError) {
       setError(queueError?.message || 'Unable to accept queued patient.')
+    } finally {
+      setQueueActionKey('')
+    }
+  }
+
+  const cancelQueueEntry = async (entry) => {
+    if (!entry?.id || !canManageQueue || entry.queueStatus !== 'pending') return
+
+    setQueueActionKey(`cancel-${entry.id}`)
+    setError('')
+
+    try {
+      const { error: updateError } = await supabase
+        .from('patient_queue_entries')
+        .update({
+          queue_status: 'cancelled',
+          accepted_by: null,
+          accepted_at: null,
+        })
+        .eq('id', entry.id)
+        .eq('queue_status', 'pending')
+
+      if (updateError) throw updateError
+
+      await loadRecords()
+    } catch (queueError) {
+      setError(queueError?.message || 'Unable to cancel queued patient.')
     } finally {
       setQueueActionKey('')
     }
@@ -629,9 +670,11 @@ function PatientRecords({ currentRole }) {
             <button type="button" className="primary" onClick={() => navigate('/add-patient')}>
               Add New Patient
             </button>
-            <button type="button" className="ghost patient-queue-trigger" onClick={() => setShowQueueModal(true)}>
-              Patient Queue
-            </button>
+            {queueEnabled ? (
+              <button type="button" className="ghost patient-queue-trigger" onClick={() => setShowQueueModal(true)}>
+                Patient Queue
+              </button>
+            ) : null}
             <button
               type="button"
               className={`ghost records-filter-toggle ${showFilters ? 'is-open' : ''}`}
@@ -680,7 +723,7 @@ function PatientRecords({ currentRole }) {
         <ErrorModal message={error} onClose={() => setError('')} />
         {loading ? <p>Loading patient records...</p> : null}
 
-        <div className="records-table patient-records-table">
+        <div className={`records-table patient-records-table${queueEnabled ? '' : ' no-queue-col'}`}>
           <div className="table-head">
             <span>Patient ID</span>
             <span>Full Name</span>
@@ -688,7 +731,7 @@ function PatientRecords({ currentRole }) {
             <span>Age</span>
             <span>Date Registered</span>
             <span>Status</span>
-            <span>Queue</span>
+            {queueEnabled ? <span>Queue</span> : null}
             <span>Actions</span>
           </div>
           <div className="table-body">
@@ -715,22 +758,24 @@ function PatientRecords({ currentRole }) {
                       }}
                     />
                   </span>
-                  <span>
-                    {queueEntry ? (
-                      <button type="button" className="queue-chip queued" onClick={() => setShowQueueModal(true)}>
-                        {`Queued #${queueEntry.position}`}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="queue-chip"
-                        disabled={!row.is_active || Boolean(queueActionKey)}
-                        onClick={() => { void addPatientToQueue(row) }}
-                      >
-                        {isAddingToQueue ? 'Adding...' : 'Add to Queue'}
-                      </button>
-                    )}
-                  </span>
+                  {queueEnabled ? (
+                    <span>
+                      {queueEntry ? (
+                        <button type="button" className="queue-chip queued" onClick={() => setShowQueueModal(true)}>
+                          {`Queued #${queueEntry.position}`}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="queue-chip"
+                          disabled={!row.is_active || Boolean(queueActionKey)}
+                          onClick={() => { void addPatientToQueue(row) }}
+                        >
+                          {isAddingToQueue ? 'Adding...' : 'Add to Queue'}
+                        </button>
+                      )}
+                    </span>
+                  ) : null}
                   <span>
                     <button
                       type="button"
@@ -748,8 +793,10 @@ function PatientRecords({ currentRole }) {
         </div>
 
         <div className="records-footer">
-          <span>
-            Showing {visibleStart}-{visibleEnd} of {filteredRecords.length} entries ({activeCount} active / {filteredRecords.length - activeCount} inactive)
+          <span className="records-footer-summary">
+            Showing {visibleStart}–{visibleEnd} of {filteredRecords.length} entries
+            <span className="patient-status-badge active">{activeCount} Active</span>
+            <span className="patient-status-badge inactive">{filteredRecords.length - activeCount} Inactive</span>
           </span>
           <div className="pagination">
             <div className="pagination-group pagination-size-group">
@@ -919,8 +966,8 @@ function PatientRecords({ currentRole }) {
         </div>
       ) : null}
 
-      {showQueueModal ? <div className="modal-backdrop" onClick={() => { if (!queueActionKey) setShowQueueModal(false) }} /> : null}
-      {showQueueModal ? (
+      {queueEnabled && showQueueModal ? <div className="modal-backdrop" onClick={() => { if (!queueActionKey) setShowQueueModal(false) }} /> : null}
+      {queueEnabled && showQueueModal ? (
         <div className="pr-modal procedures-modal patient-queue-modal">
           <div className="pr-modal-head">
             <h2>Patient Queue</h2>
@@ -959,14 +1006,14 @@ function PatientRecords({ currentRole }) {
                   value={queueStatusViewFilter}
                   onChange={(event) => setQueueStatusViewFilter(event.target.value)}
                 >
+                  <option value="pending">Pending</option>
                   <option value="all">All</option>
                   <option value="accepted">Accepted</option>
-                  <option value="pending">Pending</option>
                 </select>
               </label>
             </div>
 
-            <div className={`records-table patient-queue-table ${canAcceptQueue ? 'can-accept-queue' : 'read-only-queue'}`}>
+            <div className={`records-table patient-queue-table ${canManageQueue ? (canAcceptQueue ? 'can-accept-queue' : 'has-queue-actions') : 'read-only-queue'}`}>
               <div className="table-head">
                 <span>#</span>
                 <span>Patient ID</span>
@@ -974,12 +1021,13 @@ function PatientRecords({ currentRole }) {
                 <span>Queued At</span>
                 <span>Queued By</span>
                 <span>Status</span>
-                <span>Accepted By</span>
-                {canAcceptQueue ? <span>Action</span> : null}
+                {!canAcceptQueue ? <span>Accepted By</span> : null}
+                {canManageQueue ? <span>Action</span> : null}
               </div>
               <div className="table-body">
                 {filteredQueueEntries.map((entry, index) => {
                   const isAccepting = queueActionKey === `accept-${entry.id}`
+                  const isCancelling = queueActionKey === `cancel-${entry.id}`
                   const pendingIndex = pendingQueueEntries.findIndex((pendingEntry) => pendingEntry.id === entry.id)
                   const isFirstInQueue = pendingIndex === 0
                   const isAccepted = entry.queueStatus === 'accepted'
@@ -992,22 +1040,45 @@ function PatientRecords({ currentRole }) {
                       <span>{formatDateTime(entry.queuedAt)}</span>
                       <span>{entry.queuedByName || '-'}</span>
                       <span>{isAccepted ? 'Accepted' : 'Pending'}</span>
-                      <span>{isAccepted ? entry.acceptedByName || '-' : '-'}</span>
-                      {canAcceptQueue ? (
-                        <span>
+                      {!canAcceptQueue ? <span>{isAccepted ? entry.acceptedByName || '-' : '-'}</span> : null}
+                      {canManageQueue ? (
+                        <span className="queue-action-cell">
                           {isAccepted ? (
                             <span className="queue-readonly-label">Accepted</span>
-                          ) : isFirstInQueue ? (
+                          ) : !canAcceptQueue ? (
                             <button
                               type="button"
-                              className="view queue-accept-btn"
+                              className="danger-btn queue-cancel-btn queue-cancel-btn-standalone"
                               disabled={Boolean(queueActionKey)}
-                              onClick={() => { void acceptQueueEntry(entry) }}
+                              aria-label="Cancel queued patient"
+                              title="Cancel queued patient"
+                              onClick={() => { void cancelQueueEntry(entry) }}
                             >
-                              {isAccepting ? 'Accepting...' : 'Accept'}
+                              {isCancelling ? '...' : 'X'}
                             </button>
                           ) : (
-                            <span className="queue-readonly-label">Locked</span>
+                            <span className="queue-action-group">
+                              {canAcceptQueue && isFirstInQueue ? (
+                                <button
+                                  type="button"
+                                  className="view queue-accept-btn"
+                                  disabled={Boolean(queueActionKey)}
+                                  onClick={() => { void acceptQueueEntry(entry) }}
+                                >
+                                  {isAccepting ? 'Accepting...' : 'Accept'}
+                                </button>
+                              ) : canAcceptQueue ? <span className="queue-action-placeholder" aria-hidden="true" /> : null}
+                              <button
+                                type="button"
+                                className="danger-btn queue-cancel-btn"
+                                disabled={Boolean(queueActionKey)}
+                                aria-label="Cancel queued patient"
+                                title="Cancel queued patient"
+                                onClick={() => { void cancelQueueEntry(entry) }}
+                              >
+                                {isCancelling ? '...' : 'X'}
+                              </button>
+                            </span>
                           )}
                         </span>
                       ) : null}

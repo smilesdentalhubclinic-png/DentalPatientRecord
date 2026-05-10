@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 import Sidebar from './components/Sidebar'
@@ -24,6 +24,32 @@ const PLACEHOLDER_EMAIL_DOMAINS = ['@smilesdentalhub.local', '@dent22.local']
 const BACKEND_STARTING_ERROR = 'BACKEND_STARTING_ERROR'
 const INACTIVITY_LOGOUT_MS = 15 * 60 * 1000
 const LOGIN_TRANSITION_MIN_MS = 1800
+const PRESENCE_HEARTBEAT_MS = 20 * 1000
+const APP_QUEUE_ALERT_ACK_KEY = `${APP_UI_STORAGE_PREFIX}acknowledgedAcceptedQueueIds`
+const MANILA_UTC_OFFSET = '+08:00'
+const MANILA_TIME_ZONE = 'Asia/Manila'
+
+const getManilaDayRange = (reference = new Date()) => {
+  const dateParts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: MANILA_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(reference)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  )
+
+  const dateKey = `${dateParts.year}-${dateParts.month}-${dateParts.day}`
+
+  return {
+    dateKey,
+    startIso: new Date(`${dateKey}T00:00:00.000${MANILA_UTC_OFFSET}`).toISOString(),
+    endIso: new Date(`${dateKey}T23:59:59.999${MANILA_UTC_OFFSET}`).toISOString(),
+  }
+}
 
 const sleep = (ms) => new Promise((resolve) => {
   window.setTimeout(resolve, ms)
@@ -215,24 +241,162 @@ function LoginRoute({
   )
 }
 
-function ProtectedLayout({ onLogout, navItems, role, profile, sessionUser, onProfileChange, isLogoutModalOpen }) {
+function ProtectedLayout({ onLogout, navItems, role, profile, sessionUser, onProfileChange, isLogoutModalOpen, queueEnabled, onQueueToggle }) {
   const location = useLocation()
   const isPatientRecordsRoute = location.pathname === '/records'
+  const [queueAlertEntries, setQueueAlertEntries] = useState([])
+  const [acknowledgedAcceptedQueueIds, setAcknowledgedAcceptedQueueIds] = useSessionStorageState(
+    APP_QUEUE_ALERT_ACK_KEY,
+    [],
+  )
+
+  const latestUnacknowledgedAcceptedQueueEntry = useMemo(() => (
+    [...queueAlertEntries]
+      .filter((entry) => entry.id && !acknowledgedAcceptedQueueIds.includes(entry.id))
+      .sort((a, b) => new Date(b.acceptedAt || 0).getTime() - new Date(a.acceptedAt || 0).getTime())[0] ?? null
+  ), [acknowledgedAcceptedQueueIds, queueAlertEntries])
+
+  const unacknowledgedAcceptedCount = useMemo(
+    () => queueAlertEntries.filter((entry) => entry.id && !acknowledgedAcceptedQueueIds.includes(entry.id)).length,
+    [acknowledgedAcceptedQueueIds, queueAlertEntries],
+  )
+
+  useEffect(() => {
+    if (role !== 'receptionist') {
+      setQueueAlertEntries([])
+      return undefined
+    }
+
+    const fetchStaffNames = async (userIds) => {
+      const ids = [...new Set((userIds ?? []).filter(Boolean))]
+      if (!ids.length) return {}
+
+      const rpcResult = await supabase.rpc('lookup_staff_names', { p_user_ids: ids })
+      let data = rpcResult.data
+      let fetchError = rpcResult.error
+
+      if (fetchError) {
+        const fallbackResult = await supabase
+          .from('staff_profiles')
+          .select('user_id, full_name')
+          .in('user_id', ids)
+
+        data = fallbackResult.data
+        fetchError = fallbackResult.error
+      }
+
+      if (fetchError) throw fetchError
+
+      return Object.fromEntries((data ?? []).map((row) => [row.user_id, `${row.full_name || ''}`.trim() || '-']))
+    }
+
+    const loadAcceptedQueueAlerts = async () => {
+      const todayQueueRange = getManilaDayRange()
+      const { data, error } = await supabase
+        .from('patient_queue_entries')
+        .select('id, patient_id, accepted_by, accepted_at, patients(id, first_name, last_name)')
+        .eq('queue_status', 'accepted')
+        .gte('queued_at', todayQueueRange.startIso)
+        .lte('queued_at', todayQueueRange.endIso)
+        .order('accepted_at', { ascending: false })
+
+      if (error) throw error
+
+      const rows = data ?? []
+      const staffNames = await fetchStaffNames(rows.map((row) => row.accepted_by).filter(Boolean))
+
+      setQueueAlertEntries(rows.map((row) => {
+        const patientData = Array.isArray(row.patients) ? row.patients[0] : row.patients
+        return {
+          id: row.id,
+          acceptedAt: row.accepted_at,
+          acceptedByName: staffNames[row.accepted_by] || '-',
+          patientName: `${patientData?.last_name || ''}, ${patientData?.first_name || ''}`.trim().replace(/^,\s*/, '') || 'a patient',
+        }
+      }))
+    }
+
+    void loadAcceptedQueueAlerts()
+
+    const channel = supabase
+      .channel('global-receptionist-queue-alerts')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'patient_queue_entries',
+        },
+        () => {
+          void loadAcceptedQueueAlerts()
+        },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [role])
+
+  useEffect(() => {
+    if (role !== 'receptionist') return
+
+    const acceptedIds = new Set(queueAlertEntries.map((entry) => entry.id).filter(Boolean))
+    setAcknowledgedAcceptedQueueIds((previous) => {
+      const current = Array.isArray(previous) ? previous : []
+      const nextValue = current.filter((id) => acceptedIds.has(id))
+      return nextValue.length === current.length && nextValue.every((id, index) => id === current[index])
+        ? previous
+        : nextValue
+    })
+  }, [queueAlertEntries, role, setAcknowledgedAcceptedQueueIds])
+
+  const dismissAcceptedQueueNotifications = useCallback(() => {
+    const entryIds = queueAlertEntries.map((entry) => entry.id).filter((id) => id && !acknowledgedAcceptedQueueIds.includes(id))
+    if (!entryIds.length) return
+
+    setAcknowledgedAcceptedQueueIds((previous) => {
+      const current = Array.isArray(previous) ? previous : []
+      return [...new Set([...current, ...entryIds])]
+    })
+  }, [acknowledgedAcceptedQueueIds, queueAlertEntries, setAcknowledgedAcceptedQueueIds])
 
   return (
     <div className="dashboard">
-      <Sidebar onLogout={onLogout} navItems={navItems} isLogoutModalOpen={isLogoutModalOpen} />
+      <Sidebar onLogout={onLogout} navItems={navItems} isLogoutModalOpen={isLogoutModalOpen} role={role} />
       <main className={`dashboard-main ${isPatientRecordsRoute ? 'dashboard-main-no-scroll' : ''}`}>
+        {role === 'receptionist' && queueEnabled && latestUnacknowledgedAcceptedQueueEntry ? (
+          <div className="patient-queue-global-notice-wrap">
+            <div className="patient-queue-notice is-alerting" role="status" aria-live="polite">
+              <div className="patient-queue-notice-copy">
+                <strong>Queue Update</strong>
+                <span>
+                  {`${latestUnacknowledgedAcceptedQueueEntry.acceptedByName || 'A dentist'} accepted ${latestUnacknowledgedAcceptedQueueEntry.patientName}.`}
+                  {unacknowledgedAcceptedCount > 1 ? ` ${unacknowledgedAcceptedCount - 1} more update${unacknowledgedAcceptedCount - 1 === 1 ? '' : 's'} waiting.` : ''}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="patient-queue-notice-close"
+                aria-label="Dismiss queue notification"
+                title="Dismiss queue notification"
+                onClick={dismissAcceptedQueueNotifications}
+              >
+                X
+              </button>
+            </div>
+          </div>
+        ) : null}
         <Routes>
-          <Route path="home" element={<Home currentProfile={profile} />} />
-          <Route path="records" element={<PatientRecords currentRole={role} currentProfile={profile} />} />
+          <Route path="home" element={<Home currentProfile={profile} currentRole={role} queueEnabled={queueEnabled} />} />
+          <Route path="records" element={<PatientRecords currentRole={role} currentProfile={profile} queueEnabled={queueEnabled} />} />
           <Route path="records/:id" element={<PatientRecordDetails currentRole={role} currentProfile={profile} />} />
           <Route path="add-patient" element={<AddPatient />} />
           <Route path="procedure" element={<Procedures currentProfile={profile} />} />
           <Route path="logs" element={<PatientLogs />} />
-          <Route path="settings" element={<Settings currentProfile={profile} currentSessionUser={sessionUser} onProfileChange={onProfileChange} />} />
+          <Route path="settings" element={<Settings currentProfile={profile} currentSessionUser={sessionUser} onProfileChange={onProfileChange} queueEnabled={queueEnabled} onQueueToggle={onQueueToggle} />} />
           {role === 'admin' ? <Route path="admin" element={<Admin currentProfile={profile} />} /> : <Route path="admin" element={<Navigate to="/home" replace />} />}
-          {role === 'admin' ? <Route path="admin/import" element={<AdminImport />} /> : <Route path="admin/import" element={<Navigate to="/home" replace />} />}
+          {role === 'admin' ? <Route path="admin/import" element={<AdminImport queueEnabled={queueEnabled} onQueueToggle={onQueueToggle} />} /> : <Route path="admin/import" element={<Navigate to="/home" replace />} />}
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
       </main>
@@ -258,6 +422,20 @@ function AppRoutes() {
   const [forgotStep, setForgotStep] = useState('request')
   const [forgotError, setForgotError] = useState('')
   const [forgotSuccess, setForgotSuccess] = useState('')
+  const [queueEnabled, setQueueEnabled] = useState(() => localStorage.getItem('smiles_queue_enabled') !== 'false')
+
+  const handleQueueToggle = async (enabled) => {
+    setQueueEnabled(enabled)
+    localStorage.setItem('smiles_queue_enabled', enabled ? 'true' : 'false')
+    try {
+      await supabase
+        .from('clinic_settings')
+        .update({ queue_enabled: enabled, updated_at: new Date().toISOString() })
+        .eq('id', 1)
+    } catch {
+      // localStorage already updated — DB will sync on next load
+    }
+  }
   const [isVerifyingCode, setIsVerifyingCode] = useState(false)
   const [isSendingReset, setIsSendingReset] = useState(false)
   const [isResendingForgotCode, setIsResendingForgotCode] = useState(false)
@@ -496,6 +674,35 @@ function AppRoutes() {
   }, [loadAccessContext])
 
   useEffect(() => {
+    if (!session) return undefined
+
+    const loadClinicSettings = async () => {
+      const { data } = await supabase
+        .from('clinic_settings')
+        .select('queue_enabled')
+        .eq('id', 1)
+        .maybeSingle()
+      if (data) {
+        setQueueEnabled(data.queue_enabled)
+        localStorage.setItem('smiles_queue_enabled', data.queue_enabled ? 'true' : 'false')
+      }
+    }
+
+    void loadClinicSettings()
+
+    const channel = supabase
+      .channel('clinic-settings-live')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'clinic_settings' }, (payload) => {
+        const enabled = payload.new?.queue_enabled ?? true
+        setQueueEnabled(enabled)
+        localStorage.setItem('smiles_queue_enabled', enabled ? 'true' : 'false')
+      })
+      .subscribe()
+
+    return () => { void supabase.removeChannel(channel) }
+  }, [session])
+
+  useEffect(() => {
     if (!supabase || !session) return undefined
 
     let isMounted = true
@@ -549,6 +756,67 @@ function AppRoutes() {
       window.clearInterval(tokenCheckTimer)
     }
   }, [session, signOutAndRedirect])
+
+  useEffect(() => {
+    if (!session?.access_token) return undefined
+
+    let isDisposed = false
+
+    const sendPresenceHeartbeat = async () => {
+      if (document.visibilityState !== 'visible') return
+
+      try {
+        const response = await fetch('/api/auth/presence', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({}),
+        })
+
+        if (isDisposed) return
+
+        if (response.status === 401) {
+          let payload = {}
+          try {
+            payload = await response.json()
+          } catch {
+            payload = {}
+          }
+
+          if (payload?.code === 'SESSION_REPLACED') {
+            await signOutAndRedirect({
+              message: 'This account was logged in on another device or browser. Please log in again.',
+            })
+          }
+        }
+      } catch {
+        // Presence is best-effort; connectivity hiccups should not interrupt the session.
+      }
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void sendPresenceHeartbeat()
+      }
+    }
+
+    void sendPresenceHeartbeat()
+    const heartbeatTimer = window.setInterval(() => {
+      void sendPresenceHeartbeat()
+    }, PRESENCE_HEARTBEAT_MS)
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleVisibilityChange)
+
+    return () => {
+      isDisposed = true
+      window.clearInterval(heartbeatTimer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleVisibilityChange)
+    }
+  }, [session?.access_token, signOutAndRedirect])
 
   useEffect(() => {
     if (!supabase || !session) return undefined
@@ -1277,7 +1545,7 @@ function AppRoutes() {
           }
         />
         <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/*" element={<ProtectedLayout onLogout={handleLogoutRequest} navItems={navItems} role={profile?.role} profile={profile} sessionUser={session?.user} onProfileChange={setProfile} isLogoutModalOpen={isLogoutModalOpen} />} />
+        <Route path="/*" element={<ProtectedLayout onLogout={handleLogoutRequest} navItems={navItems} role={profile?.role} profile={profile} sessionUser={session?.user} onProfileChange={setProfile} isLogoutModalOpen={isLogoutModalOpen} queueEnabled={queueEnabled} onQueueToggle={handleQueueToggle} />} />
       </Routes>
 
       {isLogoutModalOpen ? (

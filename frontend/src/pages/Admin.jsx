@@ -115,6 +115,8 @@ const formatLetterNameInput = (value) => toTitleCase(sanitizeLetterNameInput(val
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i
 const OPTIONAL_SUFFIXES = new Set(['jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv', 'v'])
+const STAFF_ONLINE_WINDOW_MS = 60 * 1000
+const STAFF_PRESENCE_REFRESH_MS = 20 * 1000
 
 const splitStaffProfileName = (value) => {
   const normalized = `${value ?? ''}`.trim().replace(/\s+/g, ' ')
@@ -246,6 +248,83 @@ const summarizeAllergens = (allergenInfo) => {
   return labels.length > 0 ? labels.join(', ') : 'None selected'
 }
 
+const formatPreviewBoolean = (value) => (value ? 'Accepted' : 'Not accepted')
+
+const summarizeDentalHistory = (dh) => {
+  if (!dh || typeof dh !== 'object') return 'N/A'
+  const parts = []
+  if (dh.previous) parts.push(`Dentist: ${dh.previous}`)
+  if (dh.lastExam) parts.push(`Last Exam: ${formatDateOnly(dh.lastExam)}`)
+  if (dh.reason) parts.push(`Reason: ${dh.reason}`)
+  const answers = dh.answers || {}
+  const yesCount = Object.values(answers).filter((v) => v === 'YES').length
+  if (yesCount > 0) parts.push(`${yesCount} YES answer(s)`)
+  return parts.join(' | ') || 'None'
+}
+
+const summarizeMedicalHistory = (mh) => {
+  if (!mh || typeof mh !== 'object') return 'N/A'
+  const parts = []
+  if (mh.physician) parts.push(`Physician: ${mh.physician}`)
+  if (mh.specialty) parts.push(`Specialty: ${mh.specialty}`)
+  if (mh.address) parts.push(`Address: ${mh.address}`)
+  const answers = mh.answers || {}
+  const yesCount = Object.values(answers).filter((v) => v === 'YES').length
+  if (yesCount > 0) parts.push(`${yesCount} YES answer(s)`)
+  return parts.join(' | ') || 'None'
+}
+
+const normalizePreviewCompareValue = (field, value) => {
+  if (field === 'phone' || field === 'guardian_mobile_number') {
+    return formatPhilippineMobileDisplay(value)
+  }
+  if (field === 'birth_date') {
+    return formatDateOnly(value)
+  }
+  if (field === 'authorization_accepted') {
+    return formatPreviewBoolean(Boolean(value))
+  }
+  if (field === 'health_conditions') {
+    return summarizeHealthConditions(value)
+  }
+  if (field === 'allergen_info') {
+    return summarizeAllergens(value)
+  }
+  if (field === 'dental_history') {
+    return summarizeDentalHistory(value)
+  }
+  if (field === 'medical_history') {
+    return summarizeMedicalHistory(value)
+  }
+
+  return getDisplayValue(value, 'N/A')
+}
+
+const PATIENT_UPDATE_COMPARE_FIELDS = [
+  ['first_name', 'First Name'],
+  ['last_name', 'Last Name'],
+  ['middle_name', 'Middle Name'],
+  ['suffix', 'Suffix'],
+  ['birth_date', 'Birthdate'],
+  ['sex', 'Sex'],
+  ['nickname', 'Nickname'],
+  ['email', 'Email'],
+  ['civil_status', 'Civil Status'],
+  ['phone', 'Mobile Number'],
+  ['occupation', 'Occupation'],
+  ['address', 'Current Address'],
+  ['office_address', 'Office Address'],
+  ['guardian_name', 'Guardian Name'],
+  ['guardian_mobile_number', 'Guardian Mobile'],
+  ['guardian_occupation', 'Guardian Occupation'],
+  ['guardian_office_address', 'Guardian Office Address'],
+  ['authorization_accepted', 'Authorization'],
+  ['health_conditions', 'Health Status'],
+  ['allergen_info', 'Allergen Information'],
+  ['dental_history', 'Dental History'],
+  ['medical_history', 'Medical History'],
+]
+
 const formatStaffDisplayName = (profile) => {
   const firstName = `${profile?.first_name ?? ''}`.trim()
   const middleName = `${profile?.middle_name ?? ''}`.trim()
@@ -289,6 +368,13 @@ const formatAuditActionLabel = (action) => (
     .replace(/\b\w/g, (match) => match.toUpperCase())
     .trim() || '-'
 )
+
+const isStaffOnlineNow = (row) => {
+  if (!row?.active_session_id || !row?.last_seen_at) return false
+  const lastSeenTime = new Date(row.last_seen_at).getTime()
+  if (Number.isNaN(lastSeenTime)) return false
+  return (Date.now() - lastSeenTime) <= STAFF_ONLINE_WINDOW_MS
+}
 
 const formatAuditSourceLabel = (source) => {
   const normalized = `${source ?? ''}`.trim().toLowerCase()
@@ -458,6 +544,8 @@ function Admin() {
   const [modal, setModal] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}modal`, null)
   const [selected, setSelected] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}selected`, null)
   const [successMessage, setSuccessMessage] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}successMessage`, '')
+  const [patientUpdatePreviewBase, setPatientUpdatePreviewBase] = useState(null)
+  const [patientUpdatePreviewLoading, setPatientUpdatePreviewLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [isEditingUser, setIsEditingUser] = useState(false)
@@ -473,6 +561,7 @@ function Admin() {
   const [isImportingPatients, setIsImportingPatients] = useState(false)
   const [isImportingRecords, setIsImportingRecords] = useState(false)
   const [pendingProcessingId, setPendingProcessingId] = useState('')
+  const [pendingConfirmAction, setPendingConfirmAction] = useState(null)
   const [showUsersFilters, setShowUsersFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showUsersFilters`, false)
   const [showInactiveFilters, setShowInactiveFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showInactiveFilters`, false)
   const [showArchiveFilters, setShowArchiveFilters] = useSessionStorageState(`${ADMIN_UI_STORAGE_PREFIX}showArchiveFilters`, false)
@@ -509,6 +598,8 @@ function Admin() {
   const closeModal = () => {
     setModal(null)
     setSelected(null)
+    setPatientUpdatePreviewBase(null)
+    setPatientUpdatePreviewLoading(false)
     setIsEditingUser(false)
     setImportError('')
     setPatientImportSummary(null)
@@ -670,7 +761,7 @@ function Admin() {
   const loadUsers = async () => {
     const { data, error: fetchError } = await supabase
       .from('staff_profiles')
-      .select('user_id, full_name, first_name, middle_name, last_name, suffix, birth_date, mobile_number, address, email, username, role, is_active, created_at, updated_at')
+      .select('user_id, full_name, first_name, middle_name, last_name, suffix, birth_date, mobile_number, address, email, username, role, is_active, active_session_id, last_seen_at, created_at, updated_at')
       .eq('is_active', true)
       .order('created_at', { ascending: true })
 
@@ -754,7 +845,7 @@ function Admin() {
   const loadPendingPatientRequests = async () => {
     const { data, error: fetchError } = await supabase
       .from('pending_patient_registrations')
-      .select('id, first_name, last_name, middle_name, suffix, sex, birth_date, email, payload, requested_by, created_at, status')
+      .select('id, first_name, last_name, middle_name, suffix, sex, birth_date, email, payload, request_source, requested_by, created_at, status')
       .eq('status', 'pending')
       .order('created_at', { ascending: false })
 
@@ -1002,6 +1093,18 @@ function Admin() {
   }, [loadAll])
 
   useEffect(() => {
+    const refreshUsersPresence = () => {
+      void loadUsers().catch((fetchError) => {
+        setError(fetchError.message || 'Unable to refresh users.')
+      })
+    }
+
+    refreshUsersPresence()
+    const timer = window.setInterval(refreshUsersPresence, STAFF_PRESENCE_REFRESH_MS)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
     if (archiveType === 'patients' && archiveSortBy === 'staffId') {
       setArchiveSortBy('patientId')
     }
@@ -1023,9 +1126,67 @@ function Admin() {
     setModal('confirm-retrieve')
   }
 
-  const openPendingRequestPreview = (request) => {
+  const openPendingRequestPreview = async (request) => {
+    setError('')
+    setPatientUpdatePreviewBase(null)
+    setPatientUpdatePreviewLoading(false)
     setSelected(request)
     setModal('preview-patient-request')
+
+    if (request?.request_source !== 'patient_details_update') {
+      return
+    }
+
+    const payload = request.payload && typeof request.payload === 'object' && !Array.isArray(request.payload)
+      ? request.payload
+      : {}
+    const patientId = `${payload.patient_id || ''}`.trim()
+
+    if (!patientId) {
+      setError('Unable to load the current patient record for this update request.')
+      return
+    }
+
+    setPatientUpdatePreviewLoading(true)
+
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('patients')
+        .select(`
+          id,
+          first_name,
+          last_name,
+          middle_name,
+          suffix,
+          birth_date,
+          sex,
+          nickname,
+          email,
+          civil_status,
+          phone,
+          occupation,
+          address,
+          office_address,
+          guardian_name,
+          guardian_mobile_number,
+          guardian_occupation,
+          guardian_office_address,
+          authorization_accepted,
+          health_conditions,
+          allergen_info,
+          dental_history,
+          medical_history
+        `)
+        .eq('id', patientId)
+        .maybeSingle()
+
+      if (fetchError) throw fetchError
+      setPatientUpdatePreviewBase(data || null)
+    } catch (previewError) {
+      setError(previewError?.message || 'Unable to load the current patient record for comparison.')
+    } finally {
+      setPatientUpdatePreviewLoading(false)
+    }
   }
 
   const openEditUser = (user) => {
@@ -1474,10 +1635,13 @@ function Admin() {
     showSuccess('Retrieved successfully')
   }
 
-  const approvePendingPatientRequest = async (request) => {
+  const approvePendingPatientRequest = (request) => {
     if (!request?.id) return
-    if (!window.confirm(`Approve patient request for ${request.last_name}, ${request.first_name}?`)) return
+    setPendingConfirmAction({ type: 'approve', request })
+  }
 
+  const _executeApprovePendingPatientRequest = async (request) => {
+    const isPatientUpdateRequest = request.request_source === 'patient_details_update'
     setPendingProcessingId(request.id)
     setError('')
 
@@ -1489,39 +1653,93 @@ function Admin() {
         throw new Error('The pending request payload is missing or invalid.')
       }
 
-      const duplicatePatient = await findExistingPatientRecord(supabase, {
-        firstName: payload.first_name,
-        lastName: payload.last_name,
-        sex: payload.sex,
-        birthdate: payload.birth_date,
-      })
-      if (duplicatePatient) {
-        throw new Error(
-          `Existing record found (${formatPatientCode(duplicatePatient.patient_code, duplicatePatient.id)} - ${duplicatePatient.last_name}, ${duplicatePatient.first_name}).`,
-        )
-      }
-
       const { data: authData } = await supabase.auth.getUser()
       const actorId = authData?.user?.id ?? null
 
-      const { data: insertedPatient, error: insertError } = await supabase
-        .from('patients')
-        .insert({
-          ...payload,
-          created_by: actorId,
-          updated_by: actorId,
+      let resolvedPatientId = null
+      let resolvedPatientCode = null
+
+      if (isPatientUpdateRequest) {
+        const targetPatientId = `${payload.patient_id || ''}`.trim()
+        if (!targetPatientId) {
+          throw new Error('The patient update request is missing its target patient ID.')
+        }
+
+        const duplicatePatient = await findExistingPatientRecord(supabase, {
+          firstName: payload.first_name,
+          lastName: payload.last_name,
+          sex: payload.sex,
+          birthdate: payload.birth_date,
+          excludeId: targetPatientId,
         })
-        .select('id, patient_code')
-        .single()
+        if (duplicatePatient) {
+          throw new Error(
+            `Existing record found (${formatPatientCode(duplicatePatient.patient_code, duplicatePatient.id)} - ${duplicatePatient.last_name}, ${duplicatePatient.first_name}).`,
+          )
+        }
 
-      if (insertError) throw insertError
+        const updatePayload = {
+          ...payload,
+          updated_by: actorId,
+        }
+        delete updatePayload.patient_id
+        delete updatePayload.registered_email
 
-      const { error: logError } = await supabase.from('patient_logs').insert({
-        patient_id: insertedPatient.id,
-        action: 'create_patient',
-        details: 'Created from approved pending patient request',
-      })
-      if (logError) throw logError
+        const { data: updatedPatient, error: updatePatientError } = await supabase
+          .from('patients')
+          .update(updatePayload)
+          .eq('id', targetPatientId)
+          .eq('is_active', true)
+          .select('id, patient_code')
+          .maybeSingle()
+
+        if (updatePatientError) throw updatePatientError
+        if (!updatedPatient?.id) throw new Error('The patient record for this update request is no longer available.')
+
+        resolvedPatientId = updatedPatient.id
+        resolvedPatientCode = updatedPatient.patient_code || null
+
+        const { error: logError } = await supabase.from('patient_logs').insert({
+          patient_id: updatedPatient.id,
+          action: 'update_patient',
+          details: 'Updated from approved pending patient change request',
+        })
+        if (logError) throw logError
+      } else {
+        const duplicatePatient = await findExistingPatientRecord(supabase, {
+          firstName: payload.first_name,
+          lastName: payload.last_name,
+          sex: payload.sex,
+          birthdate: payload.birth_date,
+        })
+        if (duplicatePatient) {
+          throw new Error(
+            `Existing record found (${formatPatientCode(duplicatePatient.patient_code, duplicatePatient.id)} - ${duplicatePatient.last_name}, ${duplicatePatient.first_name}).`,
+          )
+        }
+
+        const { data: insertedPatient, error: insertError } = await supabase
+          .from('patients')
+          .insert({
+            ...payload,
+            created_by: actorId,
+            updated_by: actorId,
+          })
+          .select('id, patient_code')
+          .single()
+
+        if (insertError) throw insertError
+
+        resolvedPatientId = insertedPatient.id
+        resolvedPatientCode = insertedPatient.patient_code || null
+
+        const { error: logError } = await supabase.from('patient_logs').insert({
+          patient_id: insertedPatient.id,
+          action: 'create_patient',
+          details: 'Created from approved pending patient request',
+        })
+        if (logError) throw logError
+      }
 
       const { error: updateError } = await supabase
         .from('pending_patient_registrations')
@@ -1529,7 +1747,7 @@ function Admin() {
           status: 'approved',
           decided_by: actorId,
           decided_at: new Date().toISOString(),
-          resolved_patient_id: insertedPatient.id,
+          resolved_patient_id: resolvedPatientId,
         })
         .eq('id', request.id)
         .eq('status', 'pending')
@@ -1542,13 +1760,16 @@ function Admin() {
         entityType: 'pending_patient_registration',
         entityId: request.id,
         entityLabel: `${request.last_name}, ${request.first_name}`,
-        details: 'Approved pending patient request and created patient record.',
+        details: isPatientUpdateRequest
+          ? 'Approved pending patient update request and applied changes to the patient record.'
+          : 'Approved pending patient request and created patient record.',
         metadata: {
-          resolvedPatientId: insertedPatient.id,
-          patientCode: insertedPatient.patient_code,
+          resolvedPatientId,
+          patientCode: resolvedPatientCode,
+          requestSource: request.request_source || 'add_patient_form',
         },
       })
-      showSuccess('Patient request approved successfully.')
+      showSuccess(isPatientUpdateRequest ? 'Patient update request approved successfully.' : 'Patient request approved successfully.')
     } catch (approveError) {
       setError(
         isPatientDuplicateError(approveError)
@@ -1560,10 +1781,12 @@ function Admin() {
     }
   }
 
-  const declinePendingPatientRequest = async (request) => {
+  const declinePendingPatientRequest = (request) => {
     if (!request?.id) return
-    if (!window.confirm(`Decline patient request for ${request.last_name}, ${request.first_name}?`)) return
+    setPendingConfirmAction({ type: 'decline', request })
+  }
 
+  const _executeDeclinePendingPatientRequest = async (request) => {
     setPendingProcessingId(request.id)
     setError('')
 
@@ -2226,6 +2449,7 @@ function Admin() {
 
             <div className="records-table users-table">
               <div className="table-head">
+                <span>Status</span>
                 <span>Staff ID</span>
                 <span>Fullname</span>
                 <span>Email</span>
@@ -2236,6 +2460,13 @@ function Admin() {
               <div className="table-body">
                 {usersPaging.pageRows.map((row) => (
                   <div key={row.user_id} className="table-row">
+                    <span className="user-online-cell">
+                        <span
+                        className={`user-online-indicator ${isStaffOnlineNow(row) ? 'is-online' : 'is-offline'}`}
+                        aria-label={isStaffOnlineNow(row) ? 'Online' : 'Offline'}
+                        title={isStaffOnlineNow(row) ? 'Online' : 'Offline'}
+                      />
+                    </span>
                     <span>{formatStaffCode(row.user_id)}</span>
                     <span>{formatStaffDisplayName(row)}</span>
                     <span>{row.email}</span>
@@ -2465,11 +2696,13 @@ function Admin() {
                 <span>Email</span>
                 <span>Sex / Age</span>
                 <span>Requested By</span>
+                <span>Type</span>
                 <span>Action</span>
               </div>
               <div className="table-body">
                 {pendingPaging.pageRows.map((row) => {
                   const isProcessing = pendingProcessingId === row.id
+                  const isUpdate = row.request_source === 'patient_details_update'
                   return (
                     <div key={row.id} className="table-row">
                       <span>{formatDateTime(row.created_at)}</span>
@@ -2477,6 +2710,11 @@ function Admin() {
                       <span>{row.email || 'N/A'}</span>
                       <span>{`${row.sex === 'Male' ? 'M' : row.sex === 'Female' ? 'F' : row.sex} / ${calculateAge(row.birth_date)}`}</span>
                       <span>{row.requested_by_name || '-'}</span>
+                      <span>
+                        <span className={`request-type-badge${isUpdate ? ' update' : ' add'}`}>
+                          {isUpdate ? 'Update Patient' : 'Add Patient'}
+                        </span>
+                      </span>
                       <span className="row-actions">
                         <button type="button" className="view" disabled={Boolean(pendingProcessingId)} onClick={() => openPendingRequestPreview(row)}>
                           Preview
@@ -2967,98 +3205,152 @@ function Admin() {
               const payload = selected.payload && typeof selected.payload === 'object' && !Array.isArray(selected.payload)
                 ? selected.payload
                 : {}
+              const isPatientUpdateRequest = selected.request_source === 'patient_details_update'
               const medicalAnswers = payload.medical_history?.answers || {}
               const medicalNotes = payload.medical_history?.notes || {}
               const dentalAnswers = payload.dental_history?.answers || {}
               const dentalNotes = payload.dental_history?.notes || {}
               const isMinor = Boolean(payload.guardian_name || payload.guardian_mobile_number || payload.guardian_occupation || payload.guardian_office_address)
+              const changedFields = isPatientUpdateRequest
+                ? PATIENT_UPDATE_COMPARE_FIELDS
+                  .map(([field, label]) => {
+                    if (!(field in payload)) return null
+                    const oldValue = normalizePreviewCompareValue(field, patientUpdatePreviewBase?.[field])
+                    const newValue = normalizePreviewCompareValue(field, payload?.[field])
+                    return oldValue === newValue ? null : { field, label, oldValue, newValue }
+                  })
+                  .filter(Boolean)
+                : []
 
               return (
                 <div className="preview-shell admin-request-preview-shell">
                   <div className="preview-head">
                     <span className="preview-kicker">Review First</span>
                     <h2>{`${selected.last_name}, ${selected.first_name}`}</h2>
-                    <p>Check the submitted patient details before approving this request.</p>
+                    <p>{isPatientUpdateRequest ? 'Review the requested field changes before approving this patient update.' : 'Check the submitted patient details before approving this request.'}</p>
                   </div>
 
                   <div className="preview-grid">
-                    <article className="preview-card">
-                      <h3>Patient Information</h3>
-                      <div className="preview-detail-grid">
-                        <p><strong>Submitted</strong><span>{formatDateTime(selected.created_at)}</span></p>
-                        <p><strong>Requested By</strong><span>{getDisplayValue(selected.requested_by_name, '-')}</span></p>
-                        <p><strong>Last Name</strong><span>{getDisplayValue(payload.last_name || selected.last_name)}</span></p>
-                        <p><strong>First Name</strong><span>{getDisplayValue(payload.first_name || selected.first_name)}</span></p>
-                        <p><strong>Middle Name</strong><span>{getDisplayValue(payload.middle_name)}</span></p>
-                        <p><strong>Suffix</strong><span>{getDisplayValue(payload.suffix)}</span></p>
-                        <p><strong>Birthdate</strong><span>{getDisplayValue(formatDateOnly(payload.birth_date || selected.birth_date))}</span></p>
-                        <p><strong>Age</strong><span>{calculateAge(payload.birth_date || selected.birth_date)}</span></p>
-                        <p><strong>Sex</strong><span>{getDisplayValue(payload.sex || selected.sex)}</span></p>
-                        <p><strong>Nickname</strong><span>{getDisplayValue(payload.nickname)}</span></p>
-                        <p><strong>Email</strong><span>{getDisplayValue(payload.email)}</span></p>
-                        <p><strong>Civil Status</strong><span>{getDisplayValue(payload.civil_status)}</span></p>
-                        <p><strong>Mobile Number</strong><span>{getDisplayValue(formatPhilippineMobileDisplay(payload.phone), 'N/A')}</span></p>
-                        <p><strong>Occupation</strong><span>{getDisplayValue(payload.occupation)}</span></p>
-                        <p className="preview-span-2"><strong>Current Address</strong><span>{getDisplayValue(payload.address)}</span></p>
-                        <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(payload.office_address)}</span></p>
-                      </div>
-
-                      {isMinor ? (
-                        <div className="preview-subsection">
-                          <h4>Guardian Details</h4>
+                    {isPatientUpdateRequest ? (
+                      <>
+                        <article className="preview-card">
+                          <h3>Request Details</h3>
                           <div className="preview-detail-grid">
-                            <p><strong>Name</strong><span>{getDisplayValue(payload.guardian_name)}</span></p>
-                            <p><strong>Mobile</strong><span>{getDisplayValue(formatPhilippineMobileDisplay(payload.guardian_mobile_number), 'N/A')}</span></p>
-                            <p><strong>Occupation</strong><span>{getDisplayValue(payload.guardian_occupation)}</span></p>
-                            <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(payload.guardian_office_address)}</span></p>
+                            <p><strong>Submitted</strong><span>{formatDateTime(selected.created_at)}</span></p>
+                            <p><strong>Requested By</strong><span>{getDisplayValue(selected.requested_by_name, '-')}</span></p>
+                            <p><strong>Patient</strong><span>{`${selected.last_name}, ${selected.first_name}`}</span></p>
+                            <p><strong>Request Source</strong><span>{getDisplayValue(selected.request_source, 'patient_details_update')}</span></p>
                           </div>
-                        </div>
-                      ) : null}
-                    </article>
+                        </article>
 
-                    <article className="preview-card">
-                      <h3>Health Summary</h3>
-                      <div className="preview-detail-grid">
-                        <p className="preview-span-2"><strong>Health Conditions</strong><span>{summarizeHealthConditions(payload.health_conditions)}</span></p>
-                        <p className="preview-span-2"><strong>Allergies</strong><span>{summarizeAllergens(payload.allergen_info)}</span></p>
-                        <p><strong>Physician</strong><span>{getDisplayValue(payload.medical_history?.physician)}</span></p>
-                        <p><strong>Specialty</strong><span>{getDisplayValue(payload.medical_history?.specialty)}</span></p>
-                        <p className="preview-span-2"><strong>Physician Address</strong><span>{getDisplayValue(payload.medical_history?.address)}</span></p>
-                        <p><strong>Authorization</strong><span>{payload.authorization_accepted ? 'Accepted' : 'Not accepted'}</span></p>
-                        <p><strong>Request Source</strong><span>{getDisplayValue(selected.request_source, 'Add Patient Form')}</span></p>
-                      </div>
-                    </article>
+                        <article className="preview-card preview-card-span-2">
+                          <h3>Changed Fields</h3>
+                          {patientUpdatePreviewLoading ? (
+                            <p className="preview-empty-state">Loading current patient data...</p>
+                          ) : changedFields.length > 0 ? (
+                            <div className="update-request-compare-list">
+                              {changedFields.map((entry) => (
+                                <div key={entry.field} className="update-request-compare-row">
+                                  <div className="update-request-compare-label">{entry.label}</div>
+                                  <div className="update-request-compare-values">
+                                    <div className="update-request-compare-old">
+                                      <span className="update-request-compare-kicker">Old</span>
+                                      <strong>{entry.oldValue}</strong>
+                                    </div>
+                                    <div className="update-request-compare-new">
+                                      <span className="update-request-compare-kicker">New</span>
+                                      <strong>{entry.newValue}</strong>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="preview-empty-state">No field differences were found for this update request.</p>
+                          )}
+                        </article>
+                      </>
+                    ) : (
+                      <>
+                        <article className="preview-card">
+                          <h3>Patient Information</h3>
+                          <div className="preview-detail-grid">
+                            <p><strong>Submitted</strong><span>{formatDateTime(selected.created_at)}</span></p>
+                            <p><strong>Requested By</strong><span>{getDisplayValue(selected.requested_by_name, '-')}</span></p>
+                            <p><strong>Last Name</strong><span>{getDisplayValue(payload.last_name || selected.last_name)}</span></p>
+                            <p><strong>First Name</strong><span>{getDisplayValue(payload.first_name || selected.first_name)}</span></p>
+                            <p><strong>Middle Name</strong><span>{getDisplayValue(payload.middle_name)}</span></p>
+                            <p><strong>Suffix</strong><span>{getDisplayValue(payload.suffix)}</span></p>
+                            <p><strong>Birthdate</strong><span>{getDisplayValue(formatDateOnly(payload.birth_date || selected.birth_date))}</span></p>
+                            <p><strong>Age</strong><span>{calculateAge(payload.birth_date || selected.birth_date)}</span></p>
+                            <p><strong>Sex</strong><span>{getDisplayValue(payload.sex || selected.sex)}</span></p>
+                            <p><strong>Nickname</strong><span>{getDisplayValue(payload.nickname)}</span></p>
+                            <p><strong>Email</strong><span>{getDisplayValue(payload.email)}</span></p>
+                            <p><strong>Civil Status</strong><span>{getDisplayValue(payload.civil_status)}</span></p>
+                            <p><strong>Mobile Number</strong><span>{getDisplayValue(formatPhilippineMobileDisplay(payload.phone), 'N/A')}</span></p>
+                            <p><strong>Occupation</strong><span>{getDisplayValue(payload.occupation)}</span></p>
+                            <p className="preview-span-2"><strong>Current Address</strong><span>{getDisplayValue(payload.address)}</span></p>
+                            <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(payload.office_address)}</span></p>
+                          </div>
 
-                    <article className="preview-card">
-                      <h3>Medical Questionnaire</h3>
-                      <div className="preview-detail-grid">
-                        {Object.keys(medicalAnswers).length > 0 ? Object.keys(medicalAnswers).map((key) => (
-                          <p key={`medical-${key}`} className="preview-span-2">
-                            <strong>{`Question ${Number(key) + 1}`}</strong>
-                            <span>{formatHistoryAnswer(medicalAnswers[key], medicalNotes[key])}</span>
-                          </p>
-                        )) : (
-                          <p className="preview-span-2"><strong>Status</strong><span>No medical answers recorded.</span></p>
-                        )}
-                      </div>
-                    </article>
+                          {isMinor ? (
+                            <div className="preview-subsection">
+                              <h4>Guardian Details</h4>
+                              <div className="preview-detail-grid">
+                                <p><strong>Name</strong><span>{getDisplayValue(payload.guardian_name)}</span></p>
+                                <p><strong>Mobile</strong><span>{getDisplayValue(formatPhilippineMobileDisplay(payload.guardian_mobile_number), 'N/A')}</span></p>
+                                <p><strong>Occupation</strong><span>{getDisplayValue(payload.guardian_occupation)}</span></p>
+                                <p className="preview-span-2"><strong>Office Address</strong><span>{getDisplayValue(payload.guardian_office_address)}</span></p>
+                              </div>
+                            </div>
+                          ) : null}
+                        </article>
 
-                    <article className="preview-card">
-                      <h3>Dental History</h3>
-                      <div className="preview-detail-grid">
-                        <p><strong>Previous Dentist</strong><span>{getDisplayValue(payload.dental_history?.previous)}</span></p>
-                        <p><strong>Last Exam</strong><span>{getDisplayValue(formatDateOnly(payload.dental_history?.lastExam))}</span></p>
-                        <p className="preview-span-2"><strong>Consultation Reason</strong><span>{getDisplayValue(payload.dental_history?.reason)}</span></p>
-                        {Object.keys(dentalAnswers).length > 0 ? Object.keys(dentalAnswers).map((key) => (
-                          <p key={`dental-${key}`} className="preview-span-2">
-                            <strong>{`Question ${Number(key) + 1}`}</strong>
-                            <span>{formatHistoryAnswer(dentalAnswers[key], dentalNotes[key])}</span>
-                          </p>
-                        )) : (
-                          <p className="preview-span-2"><strong>Status</strong><span>No dental answers recorded.</span></p>
-                        )}
-                      </div>
-                    </article>
+                        <article className="preview-card">
+                          <h3>Health Summary</h3>
+                          <div className="preview-detail-grid">
+                            <p className="preview-span-2"><strong>Health Conditions</strong><span>{summarizeHealthConditions(payload.health_conditions)}</span></p>
+                            <p className="preview-span-2"><strong>Allergies</strong><span>{summarizeAllergens(payload.allergen_info)}</span></p>
+                            <p><strong>Physician</strong><span>{getDisplayValue(payload.medical_history?.physician)}</span></p>
+                            <p><strong>Specialty</strong><span>{getDisplayValue(payload.medical_history?.specialty)}</span></p>
+                            <p className="preview-span-2"><strong>Physician Address</strong><span>{getDisplayValue(payload.medical_history?.address)}</span></p>
+                            <p><strong>Authorization</strong><span>{payload.authorization_accepted ? 'Accepted' : 'Not accepted'}</span></p>
+                            <p><strong>Request Source</strong><span>{getDisplayValue(selected.request_source, 'Add Patient Form')}</span></p>
+                          </div>
+                        </article>
+
+                        <article className="preview-card">
+                          <h3>Medical Questionnaire</h3>
+                          <div className="preview-detail-grid">
+                            {Object.keys(medicalAnswers).length > 0 ? Object.keys(medicalAnswers).map((key) => (
+                              <p key={`medical-${key}`} className="preview-span-2">
+                                <strong>{`Question ${Number(key) + 1}`}</strong>
+                                <span>{formatHistoryAnswer(medicalAnswers[key], medicalNotes[key])}</span>
+                              </p>
+                            )) : (
+                              <p className="preview-span-2"><strong>Status</strong><span>No medical answers recorded.</span></p>
+                            )}
+                          </div>
+                        </article>
+
+                        <article className="preview-card">
+                          <h3>Dental History</h3>
+                          <div className="preview-detail-grid">
+                            <p><strong>Previous Dentist</strong><span>{getDisplayValue(payload.dental_history?.previous)}</span></p>
+                            <p><strong>Last Exam</strong><span>{getDisplayValue(formatDateOnly(payload.dental_history?.lastExam))}</span></p>
+                            <p className="preview-span-2"><strong>Consultation Reason</strong><span>{getDisplayValue(payload.dental_history?.reason)}</span></p>
+                            {Object.keys(dentalAnswers).length > 0 ? Object.keys(dentalAnswers).map((key) => (
+                              <p key={`dental-${key}`} className="preview-span-2">
+                                <strong>{`Question ${Number(key) + 1}`}</strong>
+                                <span>{formatHistoryAnswer(dentalAnswers[key], dentalNotes[key])}</span>
+                              </p>
+                            )) : (
+                              <p className="preview-span-2"><strong>Status</strong><span>No dental answers recorded.</span></p>
+                            )}
+                          </div>
+                        </article>
+                      </>
+                    )}
                   </div>
 
                   <div className="modal-actions">
@@ -3073,6 +3365,43 @@ function Admin() {
                 </div>
               )
             })()}
+          </div>
+        </div>
+      ) : null}
+
+      {pendingConfirmAction ? <div className="modal-backdrop" onClick={() => { if (!pendingProcessingId) setPendingConfirmAction(null) }} /> : null}
+      {pendingConfirmAction ? (
+        <div className="pr-modal procedures-modal archive-modal">
+          <div className="pr-modal-head">
+            <h2>{pendingConfirmAction.type === 'approve' ? 'Approve Request' : 'Decline Request'}</h2>
+          </div>
+          <div className="pr-modal-body">
+            <p>
+              {pendingConfirmAction.type === 'approve'
+                ? `${pendingConfirmAction.request.request_source === 'patient_details_update' ? 'Approve patient update request' : 'Approve patient request'} for ${pendingConfirmAction.request.last_name}, ${pendingConfirmAction.request.first_name}?`
+                : `Decline patient request for ${pendingConfirmAction.request.last_name}, ${pendingConfirmAction.request.first_name}?`}
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="ghost" disabled={Boolean(pendingProcessingId)} onClick={() => setPendingConfirmAction(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className={pendingConfirmAction.type === 'approve' ? 'success-btn' : 'danger-btn'}
+                disabled={Boolean(pendingProcessingId)}
+                onClick={() => {
+                  const action = pendingConfirmAction
+                  setPendingConfirmAction(null)
+                  if (action.type === 'approve') {
+                    void _executeApprovePendingPatientRequest(action.request)
+                  } else {
+                    void _executeDeclinePendingPatientRequest(action.request)
+                  }
+                }}
+              >
+                {pendingProcessingId ? 'Processing...' : pendingConfirmAction.type === 'approve' ? 'Approve' : 'Decline'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

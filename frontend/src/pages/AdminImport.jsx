@@ -25,7 +25,9 @@ function ImportCard({
   fileName,
   inputRef,
   isImporting,
+  isValidating,
   onChoose,
+  onValidate,
   onImport,
   actionLabel,
   inputAccept = '.csv,text/csv',
@@ -34,6 +36,7 @@ function ImportCard({
   templateDownloadName,
   onTemplateDownload,
 }) {
+  const isBusy = isImporting || isValidating
   return (
     <section className="admin-import-workspace-card">
       <div className="admin-import-section-head">
@@ -56,7 +59,10 @@ function ImportCard({
             {templateLabel}
           </a>
         )}
-        <button type="button" className="success-btn" onClick={onImport} disabled={isImporting}>
+        <button type="button" className="ghost admin-import-validate-btn" onClick={onValidate} disabled={isBusy}>
+          {isValidating ? 'Validating...' : 'Validate Only'}
+        </button>
+        <button type="button" className="success-btn" onClick={onImport} disabled={isBusy}>
           {isImporting ? 'Importing...' : actionLabel}
         </button>
       </div>
@@ -64,7 +70,7 @@ function ImportCard({
   )
 }
 
-function AdminImport() {
+function AdminImport({ queueEnabled = true, onQueueToggle }) {
   const patientImportFileInputRef = useRef(null)
   const recordsImportFileInputRef = useRef(null)
   const [patientImportFileName, setPatientImportFileName] = useState('')
@@ -76,6 +82,8 @@ function AdminImport() {
   const [importError, setImportError] = useState('')
   const [isImportingPatients, setIsImportingPatients] = useState(false)
   const [isImportingRecords, setIsImportingRecords] = useState(false)
+  const [isValidatingPatients, setIsValidatingPatients] = useState(false)
+  const [isValidatingRecords, setIsValidatingRecords] = useState(false)
   const [importLogLines, setImportLogLines] = useState([
     '[ready] Import workspace initialized. Choose a patient Excel file or a CSV file to begin.',
   ])
@@ -147,53 +155,96 @@ function AdminImport() {
     }
   }
 
+  const callImportApi = async (url, fileName, csvContent, dryRun) => {
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
+    const accessToken = sessionData?.session?.access_token || ''
+    if (sessionError || !accessToken) throw new Error('Unable to verify your session. Please log in again.')
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify({ fileName, csvContent, dryRun }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(payload?.error || 'Request failed.')
+    return payload
+  }
+
+  const validatePatientMigration = async () => {
+    if (!patientImportCsvContent.trim()) {
+      setImportError('Please choose the patient information file first.')
+      return
+    }
+    setIsValidatingPatients(true)
+    setImportError('')
+    appendLogLines([`[run] Validating patient file: ${patientImportFileName || 'unnamed file'}...`])
+    try {
+      const payload = await callImportApi('/api/admin/import-patient-migration', patientImportFileName, patientImportCsvContent, true)
+      const { summary } = payload
+      if (summary.errors.length === 0) {
+        appendLogLines([`[ok] Validation passed — ${summary.totalRows} rows are ready to import.`])
+      } else {
+        appendLogLines([`[info] Validation found ${summary.errors.length} error(s) in ${summary.totalRows} rows. Fix them before importing.`])
+        summary.errors.forEach((e) => appendLogLines([`[row-error] ${e}`]))
+      }
+    } catch (err) {
+      setImportError(err.message || 'Validation failed.')
+      appendLogLines([`[error] Validation failed: ${err.message || 'Unable to complete.'}`])
+    } finally {
+      setIsValidatingPatients(false)
+    }
+  }
+
   const importPatientMigration = async () => {
     if (!patientImportCsvContent.trim()) {
       setImportError('Please choose the patient information file first.')
       appendLogLines(['[error] Patient import was blocked because no patient file was selected.'])
       return
     }
-
     setIsImportingPatients(true)
     setImportError('')
     setPatientImportSummary(null)
-    appendLogLines([`[run] Starting patient import for ${patientImportFileName || 'unnamed file'}...`])
-
     try {
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
-      const accessToken = sessionData?.session?.access_token || ''
-      if (sessionError || !accessToken) {
-        setImportError('Unable to verify your session. Please log in again.')
-        appendLogLines(['[error] Patient import failed because the current session could not be verified.'])
+      appendLogLines([`[run] Validating all rows before import...`])
+      const dryPayload = await callImportApi('/api/admin/import-patient-migration', patientImportFileName, patientImportCsvContent, true)
+      if (dryPayload.summary.errors.length > 0) {
+        appendLogLines([`[error] Import blocked — ${dryPayload.summary.errors.length} row error(s) found. Fix them and try again.`])
+        dryPayload.summary.errors.forEach((e) => appendLogLines([`[row-error] ${e}`]))
         return
       }
-
-      const response = await fetch('/api/admin/import-patient-migration', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          fileName: patientImportFileName,
-          csvContent: patientImportCsvContent,
-        }),
-      })
-
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        setImportError(payload?.error || 'Unable to import the patient file.')
-        appendLogLines([`[error] Patient import failed: ${payload?.error || 'Unable to import the patient file.'}`])
-        return
-      }
-
+      appendLogLines([`[ok] Validation passed — importing ${dryPayload.summary.totalRows} rows...`])
+      const payload = await callImportApi('/api/admin/import-patient-migration', patientImportFileName, patientImportCsvContent, false)
       setPatientImportSummary(payload?.summary || null)
       appendLogLines(buildSummaryLogLines('Patient', payload?.summary || null))
-    } catch {
-      setImportError('Unable to import the patient file.')
-      appendLogLines(['[error] Patient import failed because the request could not be completed.'])
+    } catch (err) {
+      setImportError(err.message || 'Unable to import the patient file.')
+      appendLogLines([`[error] Patient import failed: ${err.message || 'Unable to complete.'}`])
     } finally {
       setIsImportingPatients(false)
+    }
+  }
+
+  const validatePatientRecords = async () => {
+    if (!recordsImportCsvContent.trim()) {
+      setImportError('Please choose the dental and service records file first.')
+      return
+    }
+    setIsValidatingRecords(true)
+    setImportError('')
+    appendLogLines([`[run] Validating records file: ${recordsImportFileName || 'unnamed file'}...`])
+    try {
+      const payload = await callImportApi('/api/admin/import-patient-records', recordsImportFileName, recordsImportCsvContent, true)
+      const { summary } = payload
+      if (summary.errors.length === 0) {
+        appendLogLines([`[ok] Validation passed — ${summary.totalRows} rows are ready to import.`])
+      } else {
+        appendLogLines([`[info] Validation found ${summary.errors.length} error(s) in ${summary.totalRows} rows. Fix them before importing.`])
+        summary.errors.forEach((e) => appendLogLines([`[row-error] ${e}`]))
+      }
+    } catch (err) {
+      setImportError(err.message || 'Validation failed.')
+      appendLogLines([`[error] Validation failed: ${err.message || 'Unable to complete.'}`])
+    } finally {
+      setIsValidatingRecords(false)
     }
   }
 
@@ -203,45 +254,24 @@ function AdminImport() {
       appendLogLines(['[error] Records import was blocked because no records file was selected.'])
       return
     }
-
     setIsImportingRecords(true)
     setImportError('')
     setRecordsImportSummary(null)
-    appendLogLines([`[run] Starting records import for ${recordsImportFileName || 'unnamed file'}...`])
-
     try {
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession()
-      const accessToken = sessionData?.session?.access_token || ''
-      if (sessionError || !accessToken) {
-        setImportError('Unable to verify your session. Please log in again.')
-        appendLogLines(['[error] Records import failed because the current session could not be verified.'])
+      appendLogLines([`[run] Validating all rows before import...`])
+      const dryPayload = await callImportApi('/api/admin/import-patient-records', recordsImportFileName, recordsImportCsvContent, true)
+      if (dryPayload.summary.errors.length > 0) {
+        appendLogLines([`[error] Import blocked — ${dryPayload.summary.errors.length} row error(s) found. Fix them and try again.`])
+        dryPayload.summary.errors.forEach((e) => appendLogLines([`[row-error] ${e}`]))
         return
       }
-
-      const response = await fetch('/api/admin/import-patient-records', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
-          fileName: recordsImportFileName,
-          csvContent: recordsImportCsvContent,
-        }),
-      })
-
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        setImportError(payload?.error || 'Unable to import the dental and service records file.')
-        appendLogLines([`[error] Records import failed: ${payload?.error || 'Unable to import the dental and service records file.'}`])
-        return
-      }
-
+      appendLogLines([`[ok] Validation passed — importing ${dryPayload.summary.totalRows} rows...`])
+      const payload = await callImportApi('/api/admin/import-patient-records', recordsImportFileName, recordsImportCsvContent, false)
       setRecordsImportSummary(payload?.summary || null)
       appendLogLines(buildSummaryLogLines('Records', payload?.summary || null))
-    } catch {
-      setImportError('Unable to import the dental and service records file.')
-      appendLogLines(['[error] Records import failed because the request could not be completed.'])
+    } catch (err) {
+      setImportError(err.message || 'Unable to import the records file.')
+      appendLogLines([`[error] Records import failed: ${err.message || 'Unable to complete.'}`])
     } finally {
       setIsImportingRecords(false)
     }
@@ -280,7 +310,9 @@ function AdminImport() {
               fileName={patientImportFileName}
               inputRef={patientImportFileInputRef}
               isImporting={isImportingPatients}
+              isValidating={isValidatingPatients}
               onChoose={(event) => { void handleImportFileChange(event, 'patients') }}
+              onValidate={() => { void validatePatientMigration() }}
               onImport={() => { void importPatientMigration() }}
               inputAccept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               actionLabel="Process Patient File"
@@ -294,7 +326,9 @@ function AdminImport() {
               fileName={recordsImportFileName}
               inputRef={recordsImportFileInputRef}
               isImporting={isImportingRecords}
+              isValidating={isValidatingRecords}
               onChoose={(event) => { void handleImportFileChange(event, 'records') }}
+              onValidate={() => { void validatePatientRecords() }}
               onImport={() => { void importPatientRecords() }}
               inputAccept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               actionLabel="Process Records File"
@@ -327,6 +361,20 @@ function AdminImport() {
                 </div>
               ))}
             </div>
+          </div>
+
+          <div className="import-queue-toggle-card">
+            <div className="settings-toggle-info">
+              <span>Patient Queue</span>
+              <small>Show queue features across the system</small>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={queueEnabled}
+              className={`settings-toggle-btn${queueEnabled ? ' on' : ''}`}
+              onClick={() => onQueueToggle?.(!queueEnabled)}
+            />
           </div>
         </section>
       </section>

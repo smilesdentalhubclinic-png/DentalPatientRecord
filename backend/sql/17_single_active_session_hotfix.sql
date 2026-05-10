@@ -6,7 +6,8 @@
 
 alter table public.staff_profiles
   add column if not exists active_session_id uuid,
-  add column if not exists active_session_updated_at timestamptz;
+  add column if not exists active_session_updated_at timestamptz,
+  add column if not exists last_seen_at timestamptz;
 
 create or replace function public.current_staff_role()
 returns public.staff_role

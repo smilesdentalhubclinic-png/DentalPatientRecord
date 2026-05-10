@@ -1287,7 +1287,7 @@ function AddPatient() {
               <label className="patient-span-5">
                 <span className="required-label">Email Address<span className="required-asterisk">*</span></span>
                 <input
-                  className={invalidPatientFields.email ? 'input-error' : ''}
+                  className={`patient-email-input ${invalidPatientFields.email ? 'input-error' : ''}`.trim()}
                   type="text"
                   required
                   placeholder="patient@email.com or N/A"

@@ -1,6 +1,7 @@
 const express = require('express');
 const { createSupabaseClient } = require('../supabase');
 const { assertActiveStaffSession } = require('../middleware/auth');
+const { writeSystemAuditLog } = require('../lib/audit');
 
 const router = express.Router();
 
@@ -354,8 +355,24 @@ function validateImportedPatientPayload(row, patientPayload) {
     errors.push('occupation must contain letters only.');
   }
 
-  if (patientPayload.birth_date && !isPatientAtLeastSixMonthsOld(patientPayload.birth_date)) {
-    errors.push('patient must be at least 6 months old.');
+  if (!patientPayload.birth_date && !errors.some((e) => e.includes('birth_date'))) {
+    errors.push('birth_date is required.');
+  }
+
+  if (patientPayload.birth_date) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (patientPayload.birth_date > today) {
+      errors.push('birth_date cannot be in the future.');
+    } else if (!isPatientAtLeastSixMonthsOld(patientPayload.birth_date)) {
+      errors.push('patient must be at least 6 months old.');
+    }
+  }
+
+  if (patientPayload.email) {
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i;
+    if (!emailPattern.test(patientPayload.email)) {
+      errors.push('email must be a valid email address (e.g. juan@email.com).');
+    }
   }
 
   const age = calculateAgeFromBirthDate(patientPayload.birth_date);
@@ -733,7 +750,11 @@ function buildPatientPayload(row, requesterUserId) {
     sex: normalizeSex(row.sex),
     birth_date: parseDateValue(row.birth_date),
     phone: normalizePhone(row.phone),
-    email: normalizeString(row.email).toLowerCase() || null,
+    email: (() => {
+      const raw = normalizeString(row.email).toLowerCase();
+      const NA_VALUES = new Set(['n/a', 'na', 'none', 'nil', '-', 'n.a.', 'n.a']);
+      return raw && !NA_VALUES.has(raw) ? raw : null;
+    })(),
     address: toTitleCase(row.address) || null,
     nickname: toTitleCase(row.nickname) || null,
     civil_status: normalizeCivilStatus(row.civil_status) || null,
@@ -1452,6 +1473,7 @@ router.post('/import-patient-migration', async (req, res) => {
   const { serviceClient, requesterUserId } = adminContext;
   const csvContent = typeof req.body?.csvContent === 'string' ? req.body.csvContent : '';
   const fileName = normalizeString(req.body?.fileName) || 'patients-record-migrate-template.csv';
+  const dryRun = req.body?.dryRun === true;
 
   if (!csvContent.trim()) {
     return res.status(400).json({ error: 'CSV content is required.' });
@@ -1485,11 +1507,15 @@ router.post('/import-patient-migration', async (req, res) => {
         continue;
       }
 
-      const resolvedPatient = await resolvePatient(serviceClient, patientCache, patientPayload, requesterUserId);
-      if (resolvedPatient.mode === 'created') {
+      if (dryRun) {
         summary.patientsCreated += 1;
-      } else if (resolvedPatient.mode === 'updated') {
-        summary.patientsUpdated += 1;
+      } else {
+        const resolvedPatient = await resolvePatient(serviceClient, patientCache, patientPayload, requesterUserId);
+        if (resolvedPatient.mode === 'created') {
+          summary.patientsCreated += 1;
+        } else if (resolvedPatient.mode === 'updated') {
+          summary.patientsUpdated += 1;
+        }
       }
     } catch (error) {
       summary.skippedRows += 1;
@@ -1497,9 +1523,31 @@ router.post('/import-patient-migration', async (req, res) => {
     }
   }
 
+  if (!dryRun) {
+    await writeSystemAuditLog({
+      action: 'patient_import_completed',
+      entityType: 'import',
+      entityId: null,
+      entityLabel: fileName,
+      details: `Patient import completed: ${summary.patientsCreated} created, ${summary.patientsUpdated} updated, ${summary.skippedRows} skipped.`,
+      actorUserId: requesterUserId,
+      metadata: {
+        fileName,
+        totalRows: summary.totalRows,
+        patientsCreated: summary.patientsCreated,
+        patientsUpdated: summary.patientsUpdated,
+        skippedRows: summary.skippedRows,
+        errorCount: summary.errors.length,
+      },
+    }).catch(() => {});
+  }
+
   return res.json({
     ok: true,
-    message: 'Patient migration import completed.',
+    dryRun,
+    message: dryRun
+      ? 'Validation complete. No data was saved.'
+      : 'Patient migration import completed.',
     summary,
   });
 });
@@ -1515,6 +1563,7 @@ router.post('/import-patient-records', async (req, res) => {
   const { requesterClient, serviceClient, requesterUserId } = adminContext;
   const csvContent = typeof req.body?.csvContent === 'string' ? req.body.csvContent : '';
   const fileName = normalizeString(req.body?.fileName) || 'patient-records-migrate-template.csv';
+  const dryRun = req.body?.dryRun === true;
 
   if (!csvContent.trim()) {
     return res.status(400).json({ error: 'CSV content is required.' });
@@ -1653,30 +1702,41 @@ router.post('/import-patient-records', async (req, res) => {
               requesterUserId,
               resolvedDentistProfile?.user_id || null,
             );
+          const maxDiscount = (servicePayload.unit_price ?? 0) * (servicePayload.quantity ?? 1);
+          if ((servicePayload.discount_amount ?? 0) > maxDiscount) {
+            throw new Error(
+              `discount_amount (${servicePayload.discount_amount}) exceeds total price (${maxDiscount}) for service "${resolvedService.service_name}".`,
+            );
+          }
           servicePayloads.push(servicePayload);
         }
       }
 
-      if (dentalPayload) {
-        const dentalMode = await upsertDentalRecord(requesterClient, dentalPayload, requesterUserId);
-        if (dentalMode === 'created') {
-          summary.dentalRecordsCreated += 1;
-        } else {
-          summary.dentalRecordsUpdated += 1;
+      if (!dryRun) {
+        if (dentalPayload) {
+          const dentalMode = await upsertDentalRecord(requesterClient, dentalPayload, requesterUserId);
+          if (dentalMode === 'created') {
+            summary.dentalRecordsCreated += 1;
+          } else {
+            summary.dentalRecordsUpdated += 1;
+          }
         }
-      }
 
-      for (const servicePayload of servicePayloads) {
-        const serviceMode = await upsertServiceRecord(requesterClient, servicePayload, requesterUserId);
-        if (serviceMode === 'created') {
-          summary.serviceRecordsCreated += 1;
-        } else {
-          summary.serviceRecordsUpdated += 1;
+        for (const servicePayload of servicePayloads) {
+          const serviceMode = await upsertServiceRecord(requesterClient, servicePayload, requesterUserId);
+          if (serviceMode === 'created') {
+            summary.serviceRecordsCreated += 1;
+          } else {
+            summary.serviceRecordsUpdated += 1;
+          }
         }
-      }
 
-      if (servicePayloads.length > 0) {
-        await createImportedServiceLogs(serviceClient, resolvedPatient.id, servicePayloads, requesterUserId);
+        if (servicePayloads.length > 0) {
+          await createImportedServiceLogs(serviceClient, resolvedPatient.id, servicePayloads, requesterUserId);
+        }
+      } else {
+        if (dentalPayload) summary.dentalRecordsCreated += 1;
+        summary.serviceRecordsCreated += servicePayloads.length;
       }
     } catch (error) {
       summary.skippedRows += 1;
@@ -1684,9 +1744,33 @@ router.post('/import-patient-records', async (req, res) => {
     }
   }
 
+  if (!dryRun) {
+    await writeSystemAuditLog({
+      action: 'patient_records_import_completed',
+      entityType: 'import',
+      entityId: null,
+      entityLabel: fileName,
+      details: `Records import completed: ${summary.dentalRecordsCreated} dental created, ${summary.serviceRecordsCreated} service created, ${summary.skippedRows} skipped.`,
+      actorUserId: requesterUserId,
+      metadata: {
+        fileName,
+        totalRows: summary.totalRows,
+        dentalRecordsCreated: summary.dentalRecordsCreated,
+        dentalRecordsUpdated: summary.dentalRecordsUpdated,
+        serviceRecordsCreated: summary.serviceRecordsCreated,
+        serviceRecordsUpdated: summary.serviceRecordsUpdated,
+        skippedRows: summary.skippedRows,
+        errorCount: summary.errors.length,
+      },
+    }).catch(() => {});
+  }
+
   return res.json({
     ok: true,
-    message: 'Patient records import completed.',
+    dryRun,
+    message: dryRun
+      ? 'Validation complete. No data was saved.'
+      : 'Patient records import completed.',
     summary,
   });
 });

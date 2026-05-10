@@ -152,7 +152,7 @@ const getProfileNameParts = (profile) => {
   }
 }
 
-function Settings({ currentProfile, currentSessionUser, onProfileChange }) {
+function Settings({ currentProfile, currentSessionUser, onProfileChange, queueEnabled, onQueueToggle }) {
   const [profileOverride, setProfileOverride] = useState(null)
   const [authUserOverride, setAuthUserOverride] = useState(
     currentSessionUser?.user_metadata?.password_updated_at ? currentSessionUser : null,

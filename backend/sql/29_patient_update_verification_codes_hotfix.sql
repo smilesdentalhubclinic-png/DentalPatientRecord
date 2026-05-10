@@ -1,4 +1,5 @@
--- Allow patient registration email verification codes in verification_codes.
+-- Allow patient update OTP verification codes in verification_codes.
+-- Safe to re-run.
 
 alter table public.verification_codes
   drop constraint if exists verification_codes_purpose_check;

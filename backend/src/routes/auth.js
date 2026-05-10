@@ -30,6 +30,7 @@ const FAILED_LOGIN_TRACKING_WINDOW_MS = 30 * 60 * 1000;
 const VERIFICATION_PURPOSE = Object.freeze({
   EMAIL_CHANGE: 'email_change',
   PATIENT_REGISTRATION: 'patient_registration',
+  PATIENT_UPDATE: 'patient_update',
   STAFF_ONBOARDING: 'staff_onboarding',
   PASSWORD_RESET: 'password_reset',
 });
@@ -43,11 +44,13 @@ async function setActiveStaffSession(serviceClient, userId, sessionId) {
     throw new Error('Unable to determine active session.');
   }
 
+  const nowIso = new Date().toISOString();
   const { error } = await serviceClient
     .from('staff_profiles')
     .update({
       active_session_id: sessionId,
-      active_session_updated_at: new Date().toISOString(),
+      active_session_updated_at: nowIso,
+      last_seen_at: nowIso,
     })
     .eq('user_id', userId);
 
@@ -57,11 +60,31 @@ async function setActiveStaffSession(serviceClient, userId, sessionId) {
 async function clearActiveStaffSession(serviceClient, userId, sessionId) {
   if (!userId || !sessionId) return;
 
+  const nowIso = new Date().toISOString();
   const { error } = await serviceClient
     .from('staff_profiles')
     .update({
       active_session_id: null,
-      active_session_updated_at: new Date().toISOString(),
+      active_session_updated_at: nowIso,
+      last_seen_at: nowIso,
+    })
+    .eq('user_id', userId)
+    .eq('active_session_id', sessionId);
+
+  if (error) throw error;
+}
+
+async function touchStaffPresence(serviceClient, userId, sessionId) {
+  if (!userId || !sessionId) {
+    throw new Error('Unable to determine current staff presence.');
+  }
+
+  const nowIso = new Date().toISOString();
+  const { error } = await serviceClient
+    .from('staff_profiles')
+    .update({
+      active_session_updated_at: nowIso,
+      last_seen_at: nowIso,
     })
     .eq('user_id', userId)
     .eq('active_session_id', sessionId);
@@ -1370,6 +1393,166 @@ router.post('/verify-patient-registration-code', requireAccessToken, async (req,
   }
 });
 
+router.post('/request-patient-update-code', requireAccessToken, async (req, res) => {
+  try {
+    const patientId = normalizeString(req.body?.patientId);
+    const changes = Array.isArray(req.body?.changes) ? req.body.changes : [];
+    if (!patientId) {
+      return res.status(400).json({ error: 'patientId is required.' });
+    }
+    if (!isSmtpConfigured()) {
+      return res.status(500).json({ error: 'SMTP is not configured for verification emails.' });
+    }
+
+    const requesterContext = await requireAuthenticatedRequester(req.accessToken);
+    if (requesterContext.errorResponse) {
+      const { status, payload } = requesterContext.errorResponse;
+      return payload?.error ? res.status(status).json(payload) : sendSupabaseError(res, payload, status);
+    }
+
+    const { requesterUserData, requesterProfile, serviceClient } = requesterContext;
+    const { data: patientRow, error: patientError } = await serviceClient
+      .from('patients')
+      .select('id, first_name, last_name, email, is_active')
+      .eq('id', patientId)
+      .maybeSingle();
+
+    if (patientError) return sendSupabaseError(res, patientError);
+    if (!patientRow?.id || patientRow.is_active === false) {
+      return res.status(404).json({ error: 'Patient record not found.' });
+    }
+
+    const registeredEmail = normalizeString(patientRow.email).toLowerCase();
+    if (!registeredEmail) {
+      return res.status(400).json({ error: 'This patient does not have a registered email address.' });
+    }
+    if (!EMAIL_PATTERN.test(registeredEmail)) {
+      return res.status(400).json({ error: 'The registered patient email address is invalid.' });
+    }
+
+    const code = createSixDigitCode();
+
+    await storeVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PATIENT_UPDATE,
+      userId: requesterUserData.user.id,
+      email: registeredEmail,
+      code,
+      expiresInMs: EMAIL_CHANGE_CODE_EXPIRY_MS,
+      metadata: {
+        patientId,
+      },
+    });
+
+    await sendPatientRegistrationVerificationEmail({
+      toEmail: registeredEmail,
+      code,
+      requestedBy: requesterProfile.full_name || requesterUserData.user.email || 'Smiles Dental Hub',
+      expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
+      changes,
+    });
+
+    await writeSystemAuditLog({
+      action: 'patient_update_verification_requested',
+      entityType: 'patient',
+      entityId: patientId,
+      entityLabel: `${patientRow.last_name || ''}, ${patientRow.first_name || ''}`.trim().replace(/^,\s*/, '') || registeredEmail,
+      details: 'Patient update verification code requested.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { patientEmail: registeredEmail },
+    });
+
+    return res.json({
+      message: 'Verification code sent to registered patient email.',
+      email: registeredEmail,
+      expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
+    });
+  } catch (error) {
+    return sendSupabaseError(res, error, 500);
+  }
+});
+
+router.post('/verify-patient-update-code', requireAccessToken, async (req, res) => {
+  try {
+    const patientId = normalizeString(req.body?.patientId);
+    const code = normalizeString(req.body?.code);
+
+    if (!patientId || !code) {
+      return res.status(400).json({ error: 'patientId and code are required.' });
+    }
+    if (!/^\d{6}$/.test(code)) {
+      return res.status(400).json({ error: 'Verification code must be exactly 6 digits.' });
+    }
+
+    const requesterContext = await requireAuthenticatedRequester(req.accessToken);
+    if (requesterContext.errorResponse) {
+      const { status, payload } = requesterContext.errorResponse;
+      return payload?.error ? res.status(status).json(payload) : sendSupabaseError(res, payload, status);
+    }
+
+    const { requesterUserData, serviceClient } = requesterContext;
+    const storedVerification = await getVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PATIENT_UPDATE,
+      userId: requesterUserData.user.id,
+    });
+    const storedMetadata = getVerificationMetadata(storedVerification);
+
+    if (!storedVerification) {
+      return res.status(400).json({ error: 'No active patient update verification request found.' });
+    }
+    if (`${storedMetadata.patientId || ''}` !== patientId) {
+      return res.status(400).json({ error: 'This verification request does not match the patient record.' });
+    }
+    if (new Date(storedVerification.expires_at).getTime() < Date.now()) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PATIENT_UPDATE,
+        userId: requesterUserData.user.id,
+      });
+      return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
+    }
+    if (storedVerification.attempts >= EMAIL_CHANGE_MAX_ATTEMPTS) {
+      await deleteVerificationRecord({
+        purpose: VERIFICATION_PURPOSE.PATIENT_UPDATE,
+        userId: requesterUserData.user.id,
+      });
+      return res.status(400).json({ error: 'Too many invalid attempts. Please request a new code.' });
+    }
+    if (storedVerification.code_hash !== hashVerificationCode(code)) {
+      await incrementVerificationAttempts(storedVerification.id, storedVerification.attempts + 1);
+      return res.status(400).json({ error: 'Invalid verification code.' });
+    }
+
+    const { data: patientRow, error: patientError } = await serviceClient
+      .from('patients')
+      .select('id, first_name, last_name')
+      .eq('id', patientId)
+      .maybeSingle();
+    if (patientError) return sendSupabaseError(res, patientError);
+
+    await deleteVerificationRecord({
+      purpose: VERIFICATION_PURPOSE.PATIENT_UPDATE,
+      userId: requesterUserData.user.id,
+    });
+
+    await writeSystemAuditLog({
+      action: 'patient_update_verification_verified',
+      entityType: 'patient',
+      entityId: patientId,
+      entityLabel: `${patientRow?.last_name || ''}, ${patientRow?.first_name || ''}`.trim().replace(/^,\s*/, '') || patientId,
+      details: 'Patient update verification code accepted.',
+      actorUserId: requesterUserData.user.id,
+      actorIdentifier: requesterUserData.user.email || '',
+    });
+
+    return res.json({
+      message: 'Verification code accepted.',
+      patientId,
+    });
+  } catch (error) {
+    return sendSupabaseError(res, error, 500);
+  }
+});
+
 router.post('/admin-update-user-email', requireAccessToken, async (req, res) => {
   try {
     if (!config.supabaseServiceRoleKey) {
@@ -1632,6 +1815,16 @@ router.post('/logout', async (req, res) => {
     });
 
     return res.json({ message: 'Logged out.' });
+  } catch (error) {
+    return sendSupabaseError(res, error, 500);
+  }
+});
+
+router.post('/presence', requireAccessToken, async (req, res) => {
+  try {
+    const serviceClient = createSupabaseClient({ useServiceRole: true });
+    await touchStaffPresence(serviceClient, req.authenticatedUserId, req.authenticatedSessionId);
+    return res.json({ ok: true, timestamp: new Date().toISOString() });
   } catch (error) {
     return sendSupabaseError(res, error, 500);
   }

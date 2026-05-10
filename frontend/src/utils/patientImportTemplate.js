@@ -836,8 +836,45 @@ const addLegendSheet = async (workbook) => {
   worksheet.getCell('A2').font = { color: { argb: SECONDARY_TEXT } }
 
   worksheet.mergeCells('A4:D4')
-  worksheet.getCell('A4').value = 'Question Legends'
+  worksheet.getCell('A4').value = 'Field Rules'
   worksheet.getCell('A4').font = { bold: true, size: 12 }
+
+  const fieldRulesHeader = worksheet.addRow(['Column', 'Required?', 'Accepted Values', 'Notes'])
+  styleHeaderRow(fieldRulesHeader)
+
+  const FIELD_RULES = [
+    ['first_name', 'Required', 'Letters and spaces only', 'No numbers or special characters'],
+    ['last_name', 'Required', 'Letters and spaces only', 'No numbers or special characters'],
+    ['middle_name', 'Optional', 'Letters and spaces only', 'Leave blank if none'],
+    ['suffix', 'Optional', 'e.g. Jr., Sr., III', 'Leave blank if none'],
+    ['sex', 'Required', 'Male or Female (M/F accepted)', ''],
+    ['birth_date', 'Required', 'Past date only. Format: YYYY-MM-DD or MM/DD/YYYY', 'Cannot be today or a future date. Patient must be at least 6 months old.'],
+    ['phone', 'Required', 'Philippine mobile: 09XXXXXXXXX or +639XXXXXXXXX', '11 or 12 digits only'],
+    ['email', 'Optional', 'Valid email (e.g. juan@gmail.com) or leave blank / write N/A', 'N/A, NA, none, or blank are all accepted as "no email"'],
+    ['address', 'Required', 'Any text', ''],
+    ['civil_status', 'Required', 'Single, Married, Widowed, Divorced, Separated', 'Case-insensitive'],
+    ['occupation', 'Required', 'Letters and spaces only', ''],
+    ['authorization_accepted', 'Required', 'TRUE only', 'Patient must authorize data collection. Must be TRUE.'],
+    ['guardian_name', 'Required for minors', 'Letters and spaces only', 'Required if patient is under 18'],
+    ['guardian_mobile_number', 'Required for minors', 'Philippine mobile format', 'Required if patient is under 18'],
+    ['guardian_occupation', 'Required for minors', 'Letters and spaces only', 'Required if patient is under 18'],
+    ['medical_q1 – medical_q10', 'Required', 'YES or NO (TRUE/FALSE accepted)', 'Questions 2, 4, 5 require a note if answer is YES'],
+    ['dental_q1 – dental_q18', 'Required', 'YES or NO (TRUE/FALSE accepted)', 'Question 2 requires a note if answer is YES'],
+  ]
+
+  FIELD_RULES.forEach(([col, req, accepted, notes]) => {
+    const row = worksheet.addRow([col, req, accepted, notes])
+    row.getCell(2).font = {
+      bold: true,
+      color: { argb: req === 'Required' ? 'C0392B' : req === 'Optional' ? '27AE60' : 'E67E22' },
+    }
+    applyCellBorders(row)
+  })
+
+  worksheet.addRow([])
+  worksheet.mergeCells(`A${worksheet.rowCount}:D${worksheet.rowCount}`)
+  worksheet.getCell(`A${worksheet.rowCount}`).value = 'Question Legends'
+  worksheet.getCell(`A${worksheet.rowCount}`).font = { bold: true, size: 12 }
 
   const legendHeader = worksheet.addRow(['Column', 'Question', 'Note column', 'Accepted answers'])
   styleHeaderRow(legendHeader)
@@ -950,6 +987,10 @@ const addRecordsExampleSheet = async (workbook) => {
   worksheet.mergeCells('A2:D2')
   worksheet.getCell('A2').value = 'This sheet is view-only. Use it as a guide for possible record values accepted by the system.'
   worksheet.getCell('A2').font = { color: { argb: SECONDARY_TEXT } }
+
+  worksheet.mergeCells('A3:D3')
+  worksheet.getCell('A3').value = 'SERVICE DISCOUNT RULE: discount_amount cannot exceed unit_price × quantity. If it does, the row will be rejected.'
+  worksheet.getCell('A3').font = { bold: true, color: { argb: 'C0392B' } }
 
   const sampleHeader = worksheet.addRow(RECORDS_TEMPLATE_COLUMNS.map((column) => getHeaderCellValue(column.key)))
   styleHeaderRow(sampleHeader)

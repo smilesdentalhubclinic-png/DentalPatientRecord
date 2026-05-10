@@ -176,40 +176,77 @@ async function sendStaffOnboardingVerificationEmail({ toEmail, code, requestedBy
   return info;
 }
 
-async function sendPatientRegistrationVerificationEmail({ toEmail, code, requestedBy, expiresInMinutes = 10 }) {
+async function sendPatientRegistrationVerificationEmail({ toEmail, code, requestedBy, expiresInMinutes = 10, changes = [] }) {
   const transporter = createTransporter();
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
   const by = requestedBy || 'Smiles Dental Hub';
 
-  const subject = 'Smiles Dental Hub - Patient Registration Verification Code';
+  const validChanges = Array.isArray(changes)
+    ? changes.filter((c) => c && typeof c.label === 'string')
+    : [];
+
+  const changesTextBlock = validChanges.length > 0
+    ? [
+        '',
+        'Changes being requested:',
+        ...validChanges.map((c) => `  • ${c.label}: ${c.oldValue} → ${c.newValue}`),
+      ].join('\n')
+    : '';
+
+  const changesHtmlBlock = validChanges.length > 0
+    ? `<div style="margin:16px 0">
+        <p style="font-weight:700;margin:0 0 8px">Changes being requested:</p>
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="background:#eef4f7">
+              <th style="text-align:left;padding:6px 10px;border:1px solid #d7e8ef">Field</th>
+              <th style="text-align:left;padding:6px 10px;border:1px solid #d7e8ef">Old Value</th>
+              <th style="text-align:left;padding:6px 10px;border:1px solid #d7e8ef">New Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${validChanges.map((c, i) => `
+              <tr style="background:${i % 2 === 0 ? '#fff' : '#f9fcfd'}">
+                <td style="padding:6px 10px;border:1px solid #d7e8ef;font-weight:600">${String(c.label)}</td>
+                <td style="padding:6px 10px;border:1px solid #d7e8ef;color:#6b8899">${String(c.oldValue)}</td>
+                <td style="padding:6px 10px;border:1px solid #d7e8ef;color:#0f6f96;font-weight:600">${String(c.newValue)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`
+    : '';
+
+  const subject = 'Smiles Dental Hub - Patient Record Update Verification';
   const text = [
     'Hello,',
     '',
-    'A patient registration in Smiles Dental Hub is waiting for your email confirmation.',
+    'A patient record update in Smiles Dental Hub is waiting for your email confirmation.',
+    changesTextBlock,
     '',
     `Verification code: ${code}`,
     `This code expires in ${expiresInMinutes} minutes.`,
     '',
     `Requested by: ${by}`,
     '',
-    'If you are currently reviewing your patient record, give this code to the clinic staff or enter it on the clinic device.',
-    'If you did not request this verification, you can ignore this email.',
+    'Give this code to the clinic staff to authorize the update.',
+    'If you did not request this, you can ignore this email.',
   ].join('\n');
 
   const html = `
     <div style="font-family:Arial,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">
       <p>Hello,</p>
-      <p>A patient registration in <strong>Smiles Dental Hub</strong> is waiting for your email confirmation.</p>
-      <p>Enter the code below to confirm the patient details before the clinic saves the record.</p>
+      <p>A patient record update in <strong>Smiles Dental Hub</strong> is waiting for your email confirmation.</p>
+      ${changesHtmlBlock}
+      <p>Enter the verification code below to authorize these changes:</p>
       <div style="margin:20px 0;padding:16px;border-radius:12px;background:#f4fafb;border:1px solid #d7e8ef;text-align:center">
         <div style="font-size:12px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#4c6b7a;margin-bottom:6px">Verification Code</div>
         <div style="font-size:32px;font-weight:800;letter-spacing:0.18em;color:#0f6f96">${String(code)}</div>
       </div>
       <p><strong>This code expires in ${expiresInMinutes} minutes.</strong></p>
       <p style="margin-top:16px"><strong>Requested by:</strong> ${String(by)}</p>
-      <p style="margin-top:16px">If you are currently reviewing your patient record, give this code to the clinic staff or enter it on the clinic device.</p>
-      <p style="margin-top:16px">If you did not request this verification, you can ignore this email.</p>
+      <p style="margin-top:16px">Give this code to the clinic staff to authorize the update to your patient record.</p>
+      <p style="margin-top:8px;color:#dc2626"><strong>If you did not request this change, please contact the clinic immediately.</strong></p>
     </div>
   `;
 

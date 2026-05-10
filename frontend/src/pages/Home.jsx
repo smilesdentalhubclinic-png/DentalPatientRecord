@@ -109,7 +109,54 @@ const getUniqueVisitCount = (rows) => new Set(rows.map((row) => `${row.patientId
 const getUniquePatientCount = (rows) => new Set(rows.map((row) => row.patientId)).size
 const sumRevenue = (rows) => rows.reduce((total, row) => total + Number(row.amount || 0), 0)
 
-function Home({ currentProfile }) {
+const MANILA_TIME_ZONE = 'Asia/Manila'
+const MANILA_UTC_OFFSET = '+08:00'
+
+const getManilaDayRange = (reference = new Date()) => {
+  const dateParts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: MANILA_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(reference).filter((p) => p.type !== 'literal').map((p) => [p.type, p.value]),
+  )
+  const dateKey = `${dateParts.year}-${dateParts.month}-${dateParts.day}`
+  return {
+    startIso: new Date(`${dateKey}T00:00:00.000${MANILA_UTC_OFFSET}`).toISOString(),
+    endIso: new Date(`${dateKey}T23:59:59.999${MANILA_UTC_OFFSET}`).toISOString(),
+  }
+}
+
+const getManilaWeekStart = () => {
+  const now = new Date()
+  const manilaDateStr = now.toLocaleDateString('en-CA', { timeZone: MANILA_TIME_ZONE })
+  const dayOfWeek = new Date(manilaDateStr).getDay()
+  const d = new Date(`${manilaDateStr}T00:00:00.000${MANILA_UTC_OFFSET}`)
+  d.setDate(d.getDate() - dayOfWeek)
+  return d.toISOString()
+}
+
+const ROLE_METRIC_OPTIONS = {
+  admin: null,
+  receptionist: ['visits', 'registrations', 'services'],
+  associate_dentist: ['visits', 'registrations', 'services'],
+}
+
+const ROLE_LABEL = {
+  admin: 'Dashboard Overview',
+  receptionist: 'Receptionist Dashboard',
+  associate_dentist: 'Dentist Dashboard',
+}
+
+const ROLE_SUBTITLE = {
+  admin: 'Track patient movement, registrations, revenue, and service demand over time.',
+  receptionist: 'Track patient registrations, queue activity, and daily clinic flow.',
+  associate_dentist: 'Track your consultations, patient activity, and dental service demand.',
+}
+
+const ROLE_BADGE_LABEL = {
+  receptionist: 'Receptionist',
+  associate_dentist: 'Associate Dentist',
+}
+
+function Home({ currentProfile, currentRole, queueEnabled = true }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [serviceRecords, setServiceRecords] = useState([])
@@ -120,12 +167,74 @@ function Home({ currentProfile }) {
   const [viewMode, setViewMode] = useState('month')
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth())
+  const [queuePending, setQueuePending] = useState(0)
+  const [queueAcceptedToday, setQueueAcceptedToday] = useState(0)
+  const [myPatientsToday, setMyPatientsToday] = useState(0)
+  const [myPatientsThisWeek, setMyPatientsThisWeek] = useState(0)
 
   useEffect(() => {
     if (activeMetric === 'services' && viewMode === 'compare') {
       setViewMode('year')
     }
-  }, [activeMetric, viewMode])
+    const allowed = ROLE_METRIC_OPTIONS[currentRole]
+    if (allowed && !allowed.includes(activeMetric)) {
+      setActiveMetric('visits')
+    }
+  }, [activeMetric, viewMode, currentRole])
+
+  useEffect(() => {
+    if (!queueEnabled) return undefined
+
+    if (currentRole === 'receptionist') {
+      const load = async () => {
+        const todayRange = getManilaDayRange()
+        const { data } = await supabase
+          .from('patient_queue_entries')
+          .select('id, queue_status')
+          .in('queue_status', ['pending', 'accepted'])
+          .gte('queued_at', todayRange.startIso)
+          .lte('queued_at', todayRange.endIso)
+        const rows = data ?? []
+        setQueuePending(rows.filter((r) => r.queue_status === 'pending').length)
+        setQueueAcceptedToday(rows.filter((r) => r.queue_status === 'accepted').length)
+      }
+      void load()
+      const channel = supabase.channel('home-receptionist-queue')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'patient_queue_entries' }, () => { void load() })
+        .subscribe()
+      return () => { void supabase.removeChannel(channel) }
+    }
+
+    if (currentRole === 'associate_dentist') {
+      const load = async () => {
+        const { data: authData } = await supabase.auth.getUser()
+        const userId = authData?.user?.id
+        if (!userId) return
+        const todayRange = getManilaDayRange()
+        const weekStart = getManilaWeekStart()
+        const [todayRes, weekRes, pendingRes] = await Promise.all([
+          supabase.from('patient_queue_entries').select('id', { count: 'exact', head: true })
+            .eq('queue_status', 'accepted').eq('accepted_by', userId)
+            .gte('accepted_at', todayRange.startIso).lte('accepted_at', todayRange.endIso),
+          supabase.from('patient_queue_entries').select('id', { count: 'exact', head: true })
+            .eq('queue_status', 'accepted').eq('accepted_by', userId)
+            .gte('accepted_at', weekStart),
+          supabase.from('patient_queue_entries').select('id', { count: 'exact', head: true })
+            .eq('queue_status', 'pending'),
+        ])
+        setMyPatientsToday(todayRes.count || 0)
+        setMyPatientsThisWeek(weekRes.count || 0)
+        setQueuePending(pendingRes.count || 0)
+      }
+      void load()
+      const channel = supabase.channel('home-dentist-queue')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'patient_queue_entries' }, () => { void load() })
+        .subscribe()
+      return () => { void supabase.removeChannel(channel) }
+    }
+
+    return undefined
+  }, [currentRole, queueEnabled])
 
   useEffect(() => {
     let isMounted = true
@@ -459,7 +568,7 @@ function Home({ currentProfile }) {
           key: 'total-patients',
           title: 'Total Patient Records',
           value: totalPatients,
-          delta: 'All active patient records',
+          delta: 'Active and inactive patients',
           metricKey: 'visits',
         },
       ],
@@ -475,7 +584,7 @@ function Home({ currentProfile }) {
         totalServiceSliceCount,
       },
       highlights: [
-        `Total active patient records: ${formatCompactNumber(totalPatients)}.`,
+        `Total patient records (active + inactive): ${formatCompactNumber(totalPatients)}.`,
         peakBucket
           ? `${activeMetric === 'revenue' ? 'Highest revenue' : activeMetric === 'services' ? 'Most service entries' : 'Peak activity'} in the current view is ${peakBucket.dateLabel} with ${formatMetricValue(activeMetric, activeMetric === 'registrations' ? peakBucket.registrations : activeMetric === 'revenue' ? peakBucket.revenue : activeMetric === 'services' ? peakBucket.serviceCount : peakBucket.visits)}.`
           : 'Not enough historical activity yet to determine a peak period.',
@@ -485,6 +594,35 @@ function Home({ currentProfile }) {
       ],
     }
   }, [activeMetric, patientRows, selectedMonth, selectedYear, serviceRecords, totalPatients, viewMode])
+
+  const displayStats = useMemo(() => {
+    if (currentRole === 'admin') return dashboard.stats
+    const today = dashboard.stats.find((s) => s.key === 'today')
+    const week = dashboard.stats.find((s) => s.key === 'week')
+    const month = dashboard.stats.find((s) => s.key === 'month')
+    const total = dashboard.stats.find((s) => s.key === 'total-patients')
+    if (currentRole === 'receptionist') {
+      return queueEnabled
+        ? [
+          { key: 'pending', title: 'Pending in Queue', value: queuePending, delta: 'Waiting right now', metricKey: 'visits' },
+          { key: 'accepted', title: 'Accepted Today', value: queueAcceptedToday, delta: 'Seen today', metricKey: 'visits' },
+          month,
+          total,
+        ]
+        : [today, week, month, total]
+    }
+    if (currentRole === 'associate_dentist') {
+      return queueEnabled
+        ? [
+          { key: 'my-today', title: 'My Patients Today', value: myPatientsToday, delta: 'Accepted from queue today', metricKey: 'visits' },
+          { key: 'my-week', title: 'My Patients This Week', value: myPatientsThisWeek, delta: 'Accepted this week', metricKey: 'visits' },
+          { key: 'queue-pending', title: 'Pending in Queue', value: queuePending, delta: 'Waiting to be accepted', metricKey: 'visits' },
+          total,
+        ]
+        : [today, week, month, total]
+    }
+    return dashboard.stats
+  }, [currentRole, dashboard.stats, queueEnabled, queuePending, queueAcceptedToday, myPatientsToday, myPatientsThisWeek])
 
   const availableViewOptions = activeMetric === 'services'
     ? VIEW_OPTIONS.filter((option) => option.key !== 'compare')
@@ -502,14 +640,19 @@ function Home({ currentProfile }) {
   return (
     <>
       <div className="home-page analytics-home">
-        <section className="top-row analytics-top-row">
-          <div className="greeting-card analytics-hero">
-            <p>Dashboard Overview</p>
+        <section className={currentRole === 'admin' ? 'top-row analytics-top-row' : 'role-home-top-row'}>
+          <div className={`greeting-card analytics-hero${currentRole !== 'admin' ? ` greeting-role-${currentRole}` : ''}`}>
+            {ROLE_BADGE_LABEL[currentRole] ? (
+              <span className={`role-dashboard-badge role-dashboard-badge-${currentRole}`}>
+                {ROLE_BADGE_LABEL[currentRole]}
+              </span>
+            ) : null}
+            <p>{ROLE_LABEL[currentRole] ?? 'Dashboard Overview'}</p>
             <h1>{getStaffFullName(currentProfile)}</h1>
-            <span className="analytics-subtitle">Track patient movement, registrations, revenue, and service demand over time.</span>
+            <span className="analytics-subtitle">{ROLE_SUBTITLE[currentRole] ?? ''}</span>
           </div>
 
-          {dashboard.stats.map((stat) => (
+          {displayStats.map((stat) => (
             <div key={stat.key} className="stat-card analytics-stat-card">
               <p>{stat.title}</p>
               <strong>{loading ? '-' : formatMetricValue(stat.metricKey, stat.value)}</strong>
@@ -522,7 +665,10 @@ function Home({ currentProfile }) {
           <div className="analytics-filter-group wide">
             <span className="analytics-filter-label">Category</span>
             <div className="analytics-pill-group">
-              {METRIC_OPTIONS.map((option) => (
+              {(ROLE_METRIC_OPTIONS[currentRole]
+                ? METRIC_OPTIONS.filter((o) => ROLE_METRIC_OPTIONS[currentRole].includes(o.key))
+                : METRIC_OPTIONS
+              ).map((option) => (
                 <button
                   key={option.key}
                   type="button"
