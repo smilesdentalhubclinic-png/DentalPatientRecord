@@ -375,6 +375,13 @@ const formatFileSizeLabel = (bytes) => {
 
 const formatLetterNameInput = (value) => toTitleCase(sanitizeLetterNameInput(value))
 
+const sanitizeMoneyInput = (value) => {
+  const raw = `${value ?? ''}`.replace(/[^0-9.]/g, '')
+  const firstDotIndex = raw.indexOf('.')
+  if (firstDotIndex === -1) return raw
+  return `${raw.slice(0, firstDotIndex + 1)}${raw.slice(firstDotIndex + 1).replace(/\./g, '')}`
+}
+
 const calculateAge = (birthDate) => {
   if (!birthDate) return '-'
   const dob = new Date(birthDate)
@@ -665,6 +672,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const [patientUpdateVerificationError, setPatientUpdateVerificationError] = useState('')
   const [hasPendingAdminRequest, setHasPendingAdminRequest] = useState(false)
   const [pendingPatchBaseSnapshot, setPendingPatchBaseSnapshot] = useState(null)
+  const [pendingPatchBaseUpdatedAt, setPendingPatchBaseUpdatedAt] = useState(null)
   const exportPreviewFrameRef = useRef(null)
   const birthdatePickerRef = useRef(null)
   const lastExamPickerRef = useRef(null)
@@ -745,13 +753,14 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       answers: { ...patientSnapshot.medicalHistory.answers },
       notes: { ...(patientSnapshot.medicalHistory.notes || {}) },
     })
-  }, [patientSnapshot])
+  }, [patient.updatedAt, patientSnapshot])
 
   const PATCH_FIELD_LABELS = {
     first_name: 'First Name', last_name: 'Last Name', middle_name: 'Middle Name',
     suffix: 'Suffix', birth_date: 'Birthdate', sex: 'Sex', nickname: 'Nickname',
     email: 'Email', civil_status: 'Civil Status', phone: 'Mobile Number',
     occupation: 'Occupation', address: 'Current Address', office_address: 'Office Address',
+    emergency_contact_name: 'Guardian Name', emergency_contact_phone: 'Guardian Mobile',
     guardian_name: 'Guardian Name', guardian_mobile_number: 'Guardian Mobile',
     guardian_occupation: 'Guardian Occupation', guardian_office_address: 'Guardian Office Address',
     authorization_accepted: 'Authorization', health_conditions: 'Health Status',
@@ -775,17 +784,28 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const buildDetailsBaseSnapshot = useCallback((snap) => {
     if (!snap) return null
     const p = snap.patient
+    const normalizedGuardianName = toTitleCase(`${p?.guardianName ?? ''}`.trim()) || null
+    const normalizedGuardianMobile = formatPhilippineE164(p?.guardianMobileNumber ?? '')
     return {
-      first_name: p?.firstName ?? null, last_name: p?.lastName ?? null,
-      middle_name: p?.middleName ?? null, suffix: p?.suffix ?? null,
-      sex: p?.sex ?? null, birth_date: p?.birthdate ?? null,
-      nickname: p?.nickname ?? null, email: p?.email ?? null,
-      civil_status: p?.civilStatus ?? null, phone: p?.mobile ?? null,
-      occupation: p?.occupation ?? null, address: p?.address ?? null,
-      office_address: p?.officeAddress ?? null, guardian_name: p?.guardianName ?? null,
-      guardian_mobile_number: p?.guardianMobileNumber ?? null,
-      guardian_occupation: p?.guardianOccupation ?? null,
-      guardian_office_address: p?.guardianOfficeAddress ?? null,
+      first_name: toTitleCase(`${p?.firstName ?? ''}`.trim()) || null,
+      last_name: toTitleCase(`${p?.lastName ?? ''}`.trim()) || null,
+      middle_name: toTitleCase(`${p?.middleName ?? ''}`.trim()) || null,
+      suffix: toTitleCase(`${p?.suffix ?? ''}`.trim()) || null,
+      sex: normalizeSex(p?.sex) || null,
+      birth_date: p?.birthdate || null,
+      nickname: toTitleCase(`${p?.nickname ?? ''}`.trim()) || null,
+      email: normalizePatientEmail(p?.email) || null,
+      civil_status: normalizeCivilStatus(p?.civilStatus) || null,
+      phone: formatPhilippineE164(p?.mobile ?? ''),
+      occupation: toTitleCase(`${p?.occupation ?? ''}`.trim()) || null,
+      address: toTitleCase(`${p?.address ?? ''}`.trim()) || null,
+      office_address: toTitleCase(`${p?.officeAddress ?? ''}`.trim()) || null,
+      emergency_contact_name: normalizedGuardianName,
+      emergency_contact_phone: normalizedGuardianMobile,
+      guardian_name: normalizedGuardianName,
+      guardian_mobile_number: normalizedGuardianMobile,
+      guardian_occupation: toTitleCase(`${p?.guardianOccupation ?? ''}`.trim()) || null,
+      guardian_office_address: toTitleCase(`${p?.guardianOfficeAddress ?? ''}`.trim()) || null,
       authorization_accepted: p?.authorizationAccepted ?? false,
     }
   }, [])
@@ -793,6 +813,8 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
   const clearPatientUpdateVerificationState = useCallback(() => {
     setPendingDetailsPatch(null)
     setPendingPatchBaseSnapshot(null)
+    setPendingPatchBaseUpdatedAt(null)
+    setPendingPatchBaseUpdatedAt(null)
     setPatientUpdateOtp('')
     setPatientUpdateVerificationMessage('')
     setPatientUpdateVerificationError('')
@@ -1916,22 +1938,19 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
         throw new Error(payload?.error || 'Invalid verification code.')
       }
 
-      const patchedFields = Object.keys(pendingDetailsPatch).filter((k) => !['patient_id', 'registered_email', 'updated_by'].includes(k))
-      if (pendingPatchBaseSnapshot && patchedFields.length > 0) {
+      if (pendingPatchBaseUpdatedAt) {
         const { data: currentDbRow } = await supabase
           .from('patients')
-          .select(patchedFields.join(', '))
+          .select('updated_at')
           .eq('id', id)
           .eq('is_active', true)
           .maybeSingle()
         if (currentDbRow) {
-          const conflictFields = patchedFields.filter((field) => (
-            JSON.stringify(currentDbRow[field] ?? null) !== JSON.stringify(pendingPatchBaseSnapshot[field] ?? null)
-          ))
-          if (conflictFields.length > 0) {
-            const labels = conflictFields.map((f) => PATCH_FIELD_LABELS[f] || f).join(', ')
+          const currentUpdatedAt = currentDbRow.updated_at ? new Date(currentDbRow.updated_at).getTime() : null
+          const baseUpdatedAt = pendingPatchBaseUpdatedAt ? new Date(pendingPatchBaseUpdatedAt).getTime() : null
+          if (currentUpdatedAt !== baseUpdatedAt) {
             setPatientUpdateVerificationError(
-              `Conflict detected — ${labels} was updated by someone else while you were waiting. Please close, review the current record, and try again.`,
+              'Conflict detected - this patient record was updated by someone else while you were waiting. Please close, review the current record, and try again.',
             )
             setIsSaving(false)
             return
@@ -1957,7 +1976,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
     } finally {
       setIsSaving(false)
     }
-  }, [id, patientUpdateOtp, pendingDetailsPatch, updatePatientSection])
+  }, [id, patientUpdateOtp, pendingDetailsPatch, pendingPatchBaseUpdatedAt, updatePatientSection])
 
   const saveDetails = async () => {
     if (!patient.firstName.trim() || !patient.lastName.trim()) {
@@ -2045,6 +2064,7 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 
     setPendingDetailsPatch(nextDetailsPatch)
     setPendingPatchBaseSnapshot(buildDetailsBaseSnapshot(patientSnapshot))
+    setPendingPatchBaseUpdatedAt(patientSnapshot?.patient?.updatedAt || patient.updatedAt || null)
     setPatientUpdateVerificationError('')
     setPatientUpdateOtp('')
     setPatientUpdateVerificationMessage('')
@@ -2067,11 +2087,12 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
       base.medical_history = { ...patientSnapshot.medicalHistory }
     }
     setPendingPatchBaseSnapshot(Object.keys(base).length ? base : null)
+    setPendingPatchBaseUpdatedAt(patientSnapshot?.patient?.updatedAt || patient.updatedAt || null)
     setPatientUpdateVerificationError('')
     setPatientUpdateOtp('')
     setPatientUpdateVerificationMessage('')
     setModal('details-method-choice')
-  }, [patientSnapshot])
+  }, [patient.updatedAt, patientSnapshot])
 
   const saveHealth = async () => {
     await initiateSectionSave({
@@ -3719,12 +3740,11 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
                 <label className="other-service-field">
                   <span>Service Price</span>
                   <input
-                    type="number"
+                    type="text"
                     inputMode="decimal"
-                    min="0"
-                    step="0.01"
+                    pattern="[0-9]*[.]?[0-9]*"
                     value={customServicePrice}
-                    onChange={(event) => setCustomServicePrice(event.target.value)}
+                    onChange={(event) => setCustomServicePrice(sanitizeMoneyInput(event.target.value))}
                   />
                 </label>
               </div>
@@ -3849,3 +3869,6 @@ function PatientRecordDetails({ currentRole, currentProfile }) {
 }
 
 export default PatientRecordDetails
+
+
+

@@ -28,6 +28,13 @@ const sanitizeServiceNameInput = (value) => {
   return raw.replace(/[^a-zA-Z\s&'-]/g, '')
 }
 
+const sanitizeMoneyInput = (value) => {
+  const raw = `${value ?? ''}`.replace(/[^0-9.]/g, '')
+  const firstDotIndex = raw.indexOf('.')
+  if (firstDotIndex === -1) return raw
+  return `${raw.slice(0, firstDotIndex + 1)}${raw.slice(firstDotIndex + 1).replace(/\./g, '')}`
+}
+
 const normalizeLegendCode = (value) => `${value ?? ''}`.trim().toUpperCase()
 const normalizeConditionName = (value) => `${value ?? ''}`.trim().replace(/\s+/g, ' ').toLowerCase()
 const sanitizeLegendCodeInput = (value) => `${value ?? ''}`.toUpperCase().slice(0, 3)
@@ -510,12 +517,11 @@ function Procedures({ currentProfile }) {
                 <label>
                   Price (PHP)
                   <input
-                    type="number"
+                    type="text"
                     inputMode="decimal"
-                    min="0"
-                    step="0.01"
+                    pattern="[0-9]*[.]?[0-9]*"
                     value={addServicePrice}
-                    onChange={(event) => setAddServicePrice(event.target.value)}
+                    onChange={(event) => setAddServicePrice(sanitizeMoneyInput(event.target.value))}
                   />
                 </label>
               ) : null}
@@ -549,12 +555,11 @@ function Procedures({ currentProfile }) {
               <label>
                 Price (PHP)
                 <input
-                  type="number"
+                  type="text"
                   inputMode="decimal"
-                  min="0"
-                  step="0.01"
+                  pattern="[0-9]*[.]?[0-9]*"
                   value={editServicePrice}
-                  onChange={(event) => setEditServicePrice(event.target.value)}
+                  onChange={(event) => setEditServicePrice(sanitizeMoneyInput(event.target.value))}
                 />
               </label>
             </div>

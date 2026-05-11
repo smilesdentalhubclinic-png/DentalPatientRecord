@@ -1,6 +1,43 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+const resolveSupabaseUrl = () => {
+  const configuredUrl = `${import.meta.env.VITE_SUPABASE_URL || ''}`.trim()
+
+  if (typeof window === 'undefined') return configuredUrl
+
+  const currentHostname = window.location.hostname.toLowerCase()
+  const isLocalBrowser =
+    currentHostname === 'localhost' ||
+    currentHostname === '127.0.0.1' ||
+    currentHostname.endsWith('.local')
+
+  if (!configuredUrl) {
+    return isLocalBrowser
+      ? 'http://localhost:4000/supabase'
+      : `${window.location.origin}/supabase`
+  }
+
+  try {
+    const parsedUrl = new URL(configuredUrl)
+    const configuredHostname = parsedUrl.hostname.toLowerCase()
+    const pointsToLocalhost =
+      configuredHostname === 'localhost' ||
+      configuredHostname === '127.0.0.1' ||
+      configuredHostname.endsWith('.local')
+
+    if (!isLocalBrowser && pointsToLocalhost) {
+      return `${window.location.origin}/supabase`
+    }
+  } catch {
+    if (!isLocalBrowser && configuredUrl.startsWith('/')) {
+      return `${window.location.origin}${configuredUrl}`
+    }
+  }
+
+  return configuredUrl
+}
+
+const supabaseUrl = resolveSupabaseUrl()
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
 const DEFAULT_TOKEN_SKEW_SECONDS = 30
 
