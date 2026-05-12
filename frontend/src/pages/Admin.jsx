@@ -25,35 +25,78 @@ const ROLE_SORT_ORDER = ROLE_OPTIONS.reduce((accumulator, item, index) => {
   return accumulator
 }, {})
 const MONTH_ABBR = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.']
-
-const formatDate = (value) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
+const MANILA_TIME_ZONE = 'Asia/Manila'
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+const isImportedServiceMigrationLog = (details) => {
+  const normalized = `${details ?? ''}`.trim().toLowerCase()
+  return normalized === 'imported service record migration.'
+    || normalized === 'imported service record migration'
 }
 
-const formatDateOnly = (value) => {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '-'
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
+const getManilaDateParts = (date) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: MANILA_TIME_ZONE,
     year: 'numeric',
-  })
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(date)
+
+  const year = Number(parts.find((part) => part.type === 'year')?.value)
+  const month = Number(parts.find((part) => part.type === 'month')?.value)
+  const day = Number(parts.find((part) => part.type === 'day')?.value)
+
+  if (!year || !month || !day) return null
+
+  return {
+    year,
+    month,
+    day,
+  }
 }
 
-const formatDateTime = (value) => {
+const formatDateLabelFromParts = (parts) => `${MONTH_ABBR[parts.month - 1]} ${parts.day}, ${parts.year}`
+
+const formatAuditDateTime = (value, details = '') => {
   if (!value) return '-'
-  const date = new Date(value)
+
+  const rawValue = `${value}`.trim()
+  if (!rawValue) return '-'
+
+  if (DATE_ONLY_PATTERN.test(rawValue)) {
+    const [year, month, day] = rawValue.split('-').map(Number)
+    if (!year || !month || !day) return '-'
+    return formatDateLabelFromParts({ year, month, day })
+  }
+
+  const date = new Date(rawValue)
   if (Number.isNaN(date.getTime())) return '-'
-  const dateLabel = `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
+
+  const dateParts = getManilaDateParts(date)
+  if (!dateParts) return '-'
+
+  const dateLabel = formatDateLabelFromParts(dateParts)
+  if (isImportedServiceMigrationLog(details)) return dateLabel
+
   const timeLabel = date.toLocaleTimeString('en-US', {
+    timeZone: MANILA_TIME_ZONE,
     hour: 'numeric',
     minute: '2-digit',
   })
+
   return `${dateLabel} ${timeLabel}`
+}
+
+const formatDate = (value, details = '') => {
+  const formatted = formatAuditDateTime(value, details)
+  return formatted.replace(/\s+\d{1,2}:\d{2}\s(?:AM|PM)$/i, '')
+}
+
+const formatDateOnly = (value) => {
+  return formatDate(value)
+}
+
+const formatDateTime = (value, details = '') => {
+  return formatAuditDateTime(value, details)
 }
 
 const calculateAge = (birthDate) => {
@@ -970,22 +1013,24 @@ function Admin() {
       details: row.details || '-',
     }))
 
-    const normalizedPatientLogs = patientLogRows.map((row) => {
-      const patient = patientMap[row.patient_id]
-      const subject = patient
-        ? `${formatPatientDisplayName(patient)} (${formatPatientCode(patient.patient_code, patient.id)})`
-        : 'Patient record'
+    const normalizedPatientLogs = patientLogRows
+      .filter((row) => !isImportedServiceMigrationLog(row.details))
+      .map((row) => {
+        const patient = patientMap[row.patient_id]
+        const subject = patient
+          ? `${formatPatientDisplayName(patient)} (${formatPatientCode(patient.patient_code, patient.id)})`
+          : 'Patient record'
 
-      return {
-        id: `patient-log-${row.id}`,
-        timestamp: row.created_at,
-        source: 'Patient Log',
-        action: formatAuditActionLabel(row.action),
-        subject,
-        actorName: staffNames[row.created_by] || '-',
-        details: row.details || '-',
-      }
-    })
+        return {
+          id: `patient-log-${row.id}`,
+          timestamp: row.created_at,
+          source: 'Patient Log',
+          action: formatAuditActionLabel(row.action),
+          subject,
+          actorName: staffNames[row.created_by] || '-',
+          details: row.details || '-',
+        }
+      })
 
     const normalizedArchiveEvents = archiveEventRows.map((row) => {
       let subject = formatAuditActionLabel(row.table_name)
@@ -2990,7 +3035,7 @@ function Admin() {
                             <span className={`audit-feed-badge ${accentClass}`}>{categoryKey}</span>
                           </div>
                           <div className="audit-feed-time">
-                            <strong>{formatDateTime(row.timestamp)}</strong>
+                            <strong>{formatDateTime(row.timestamp, row.details)}</strong>
                             <span>{row.action}</span>
                           </div>
                         </div>

@@ -9,6 +9,8 @@ const DEFAULT_PAGE_SIZE = 10
 const ROWS_PER_PAGE_OPTIONS = [10, 20, 30, 40, 50, 60]
 const MONTH_ABBR = ['Jan.', 'Feb.', 'Mar.', 'Apr.', 'May.', 'Jun.', 'Jul.', 'Aug.', 'Sep.', 'Oct.', 'Nov.', 'Dec.']
 const PATIENT_LOGS_UI_STORAGE_PREFIX = `${UI_SESSION_STORAGE_PREFIX}patientLogs.`
+const MANILA_TIME_ZONE = 'Asia/Manila'
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const getSortDirectionLabel = (direction, isDateSort = false) => (
   isDateSort
     ? direction === 'asc'
@@ -19,15 +21,54 @@ const getSortDirectionLabel = (direction, isDateSort = false) => (
       : 'Descending'
 )
 
-const isFreshFileImportLog = (details) => `${details ?? ''}`.trim().toLowerCase() === 'imported service record migration.'
+const isFreshFileImportLog = (details) => {
+  const normalized = `${details ?? ''}`.trim().toLowerCase()
+  return normalized === 'imported service record migration.'
+    || normalized === 'imported service record migration'
+}
+
+const getManilaDateParts = (date) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: MANILA_TIME_ZONE,
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+  }).formatToParts(date)
+
+  const year = Number(parts.find((part) => part.type === 'year')?.value)
+  const month = Number(parts.find((part) => part.type === 'month')?.value)
+  const day = Number(parts.find((part) => part.type === 'day')?.value)
+
+  if (!year || !month || !day) return null
+
+  return { year, month, day }
+}
+
+const formatDateLabelFromParts = (parts) => `${MONTH_ABBR[parts.month - 1]} ${parts.day}, ${parts.year}`
 
 const formatDateTime = (value, details) => {
   if (!value) return '-'
-  const date = new Date(value)
+
+  const rawValue = `${value}`.trim()
+  if (!rawValue) return '-'
+
+  if (DATE_ONLY_PATTERN.test(rawValue)) {
+    const [year, month, day] = rawValue.split('-').map(Number)
+    if (!year || !month || !day) return '-'
+    return formatDateLabelFromParts({ year, month, day })
+  }
+
+  const date = new Date(rawValue)
   if (Number.isNaN(date.getTime())) return '-'
-  const dateLabel = `${MONTH_ABBR[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`
-  if (isFreshFileImportLog(details)) return `${dateLabel} --`
+
+  const dateParts = getManilaDateParts(date)
+  if (!dateParts) return '-'
+
+  const dateLabel = formatDateLabelFromParts(dateParts)
+  if (isFreshFileImportLog(details)) return dateLabel
+
   const timeLabel = date.toLocaleTimeString('en-US', {
+    timeZone: MANILA_TIME_ZONE,
     hour: 'numeric',
     minute: '2-digit',
   })

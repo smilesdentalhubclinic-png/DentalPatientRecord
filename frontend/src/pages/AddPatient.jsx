@@ -463,6 +463,8 @@ function AddPatient() {
     return normalized.toLowerCase()
   }
 
+  const verificationTargetEmail = getResolvedPatientEmail()
+
   const isPatientEmailUnavailable = () => {
     const normalized = normalizePatientEmail(patientInfo.email)
     return Boolean(normalized) && isNotAvailableEmail(normalized)
@@ -874,8 +876,7 @@ function AddPatient() {
   }
 
   const requestPatientVerificationCode = async ({ isResend = false } = {}) => {
-    const resolvedEmail = getResolvedPatientEmail()
-    if (!resolvedEmail) {
+    if (!verificationTargetEmail) {
       throw new Error("A real patient email address is required to send the verification code. Replace 'N/A' with the patient's email to continue.")
     }
 
@@ -886,7 +887,7 @@ function AddPatient() {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ email: resolvedEmail }),
+      body: JSON.stringify({ email: verificationTargetEmail }),
     })
     const payload = await response.json().catch(() => ({}))
 
@@ -897,8 +898,8 @@ function AddPatient() {
     setEmailVerificationError('')
     setEmailVerificationInfo(
       isResend
-        ? `A new verification code was sent to ${payload?.email || resolvedEmail}.`
-        : `Verification code sent to ${payload?.email || resolvedEmail}.`,
+        ? `A new verification code was sent to ${payload?.email || verificationTargetEmail}.`
+        : `Verification code sent to ${payload?.email || verificationTargetEmail}.`,
     )
   }
 
@@ -929,10 +930,9 @@ function AddPatient() {
   }
 
   const handleVerifyPatientEmailCode = async () => {
-    const resolvedEmail = getResolvedPatientEmail()
     const trimmedCode = `${emailVerificationCode || ''}`.trim()
 
-    if (!resolvedEmail) {
+    if (!verificationTargetEmail) {
       setEmailVerificationError("A real patient email address is required to send the verification code. Replace 'N/A' with the patient's email to continue.")
       return
     }
@@ -951,7 +951,7 @@ function AddPatient() {
           Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          email: resolvedEmail,
+          email: verificationTargetEmail,
           code: trimmedCode,
         }),
       })
