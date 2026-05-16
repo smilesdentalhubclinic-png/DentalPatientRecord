@@ -594,6 +594,7 @@ function Admin() {
   const [isEditingUser, setIsEditingUser] = useState(false)
   const [invalidAddUserFields, setInvalidAddUserFields] = useState({})
   const [addUserValidationMessage, setAddUserValidationMessage] = useState('')
+  const [showAddUserPassword, setShowAddUserPassword] = useState(false)
   const [patientImportFileName, setPatientImportFileName] = useState('')
   const [patientImportCsvContent, setPatientImportCsvContent] = useState('')
   const [patientImportSummary, setPatientImportSummary] = useState(null)
@@ -1387,6 +1388,7 @@ function Admin() {
     }
 
     setShowAddUser(false)
+    setShowAddUserPassword(false)
     setInvalidAddUserFields({})
     setAddUserValidationMessage('')
     setUserForm({
@@ -2439,7 +2441,10 @@ function Admin() {
                 </div>
               </div>
               <div className="records-actions">
-                <button type="button" className="primary" onClick={() => setShowAddUser(true)}>Add User</button>
+                <button type="button" className="primary" onClick={() => {
+                  setShowAddUserPassword(false)
+                  setShowAddUser(true)
+                }}>Add User</button>
                 <button type="button" className={`ghost records-filter-toggle ${showUsersFilters ? 'is-open' : ''}`} onClick={() => setShowUsersFilters(true)}>Filters</button>
                 <div className="sorter">
                   <label htmlFor="admin-users-sort">Sort by:</label>
@@ -2558,6 +2563,7 @@ function Admin() {
                 className="ghost"
                 onClick={() => {
                   setShowAddUser(false)
+                  setShowAddUserPassword(false)
                   setInvalidAddUserFields({})
                   setAddUserValidationMessage('')
                 }}
@@ -2589,11 +2595,56 @@ function Admin() {
                   setUserForm((p) => ({ ...p, username: nextValue }))
                   if (nextValue.trim()) setInvalidAddUserFields((p) => ({ ...p, username: false }))
                 }} /></label>
-                <label><span className="required-label">Password<span className="required-asterisk">*</span></span><input className={invalidAddUserFields.password ? 'input-error' : ''} type="password" value={userForm.password} onChange={(e) => {
-                  const nextValue = e.target.value
-                  setUserForm((p) => ({ ...p, password: nextValue }))
-                  if (nextValue.trim()) setInvalidAddUserFields((p) => ({ ...p, password: false }))
-                }} /></label>
+                <label>
+                  <span className="required-label">Password<span className="required-asterisk">*</span></span>
+                  <div className="password-field">
+                    <input className={invalidAddUserFields.password ? 'input-error' : ''} type={showAddUserPassword ? 'text' : 'password'} value={userForm.password} onChange={(e) => {
+                      const nextValue = e.target.value
+                      setUserForm((p) => ({ ...p, password: nextValue }))
+                      if (nextValue.trim()) setInvalidAddUserFields((p) => ({ ...p, password: false }))
+                    }} />
+                    <button
+                      type="button"
+                      className="eye-toggle"
+                      onClick={() => setShowAddUserPassword((previous) => !previous)}
+                      aria-label={showAddUserPassword ? 'Hide password' : 'Show password'}
+                      title={showAddUserPassword ? 'Hide password' : 'Show password'}
+                    >
+                      <svg
+                        className="eye-icon"
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        aria-hidden
+                      >
+                        <path
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                          d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"
+                        />
+                        <circle
+                          cx="12"
+                          cy="12"
+                          r="3"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                        />
+                        {!showAddUserPassword ? (
+                          <line
+                            x1="4"
+                            y1="4"
+                            x2="20"
+                            y2="20"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                          />
+                        ) : null}
+                      </svg>
+                    </button>
+                  </div>
+                </label>
                 <label><span className="required-label">Role<span className="required-asterisk">*</span></span><select className={invalidAddUserFields.role ? 'input-error' : ''} value={userForm.role} onChange={(e) => {
                   const nextValue = e.target.value
                   setUserForm((p) => ({ ...p, role: nextValue }))
