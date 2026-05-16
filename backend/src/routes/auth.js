@@ -1287,6 +1287,7 @@ router.post('/request-patient-registration-code', requireAccessToken, async (req
       code,
       requestedBy: requesterProfile.full_name || requesterUserData.user.email || 'Smiles Dental Hub',
       expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
+      mode: 'registration',
     });
     await writeSystemAuditLog({
       action: 'patient_registration_verification_requested',
@@ -1361,12 +1362,13 @@ router.post('/verify-patient-registration-code', requireAccessToken, async (req,
     }
 
     await writeSystemAuditLog({
-      action: 'password_reset_code_verified',
-      entityType: 'auth_password',
-      entityLabel: resolvedEmail,
-      details: 'Password reset verification code accepted.',
+      action: 'patient_registration_code_verified',
+      entityType: 'patient_registration',
+      entityLabel: nextEmail,
+      details: 'Patient registration verification code accepted.',
       actorUserId: storedVerification.user_id || null,
-      actorIdentifier: resolvedEmail,
+      actorIdentifier: requesterUserData.user.email || '',
+      metadata: { patientEmail: nextEmail },
     });
 
     await deleteVerificationRecord({
@@ -1449,6 +1451,7 @@ router.post('/request-patient-update-code', requireAccessToken, async (req, res)
       requestedBy: requesterProfile.full_name || requesterUserData.user.email || 'Smiles Dental Hub',
       expiresInMinutes: Math.round(EMAIL_CHANGE_CODE_EXPIRY_MS / 60000),
       changes,
+      mode: 'update',
     });
 
     await writeSystemAuditLog({

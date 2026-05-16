@@ -25,24 +25,65 @@ function isSmtpConfigured() {
   return Boolean(config.smtpHost && config.smtpPort && config.smtpUser && config.smtpPass && config.smtpFromEmail);
 }
 
+function isGmailHost(host) {
+  const normalizedHost = String(host || '').trim().toLowerCase();
+  return normalizedHost === 'smtp.gmail.com' || normalizedHost.endsWith('.gmail.com');
+}
+
+function buildTransportOptions() {
+  const useGmailSslFallback = isGmailHost(config.smtpHost) && !config.smtpSecure && config.smtpPort === 587;
+
+  return {
+    host: config.smtpHost,
+    port: useGmailSslFallback ? 465 : config.smtpPort,
+    secure: useGmailSslFallback ? true : config.smtpSecure,
+    auth: {
+      user: config.smtpUser,
+      pass: config.smtpPass,
+    },
+    family: 4,
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 30000,
+    tls: {
+      servername: config.smtpHost,
+    },
+  };
+}
+
 function createTransporter() {
   if (!isSmtpConfigured()) {
     throw new Error('SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM_EMAIL.');
   }
 
-  return nodemailer.createTransport({
-    host: config.smtpHost,
-    port: config.smtpPort,
-    secure: config.smtpSecure,
-    auth: {
-      user: config.smtpUser,
-      pass: config.smtpPass,
-    },
-  });
+  return nodemailer.createTransport(buildTransportOptions());
+}
+
+function normalizeMailerError(error) {
+  if (!error) return error;
+
+  if (['ECONNRESET', 'ETIMEDOUT'].includes(error.code) || /timeout|ECONNRESET|socket closed/i.test(error.message || '')) {
+    const normalized = new Error('Unable to deliver verification email right now. Please check the SMTP settings or try again in a moment.');
+    normalized.status = 502;
+    normalized.code = error.code || 'SMTP_DELIVERY_FAILED';
+    normalized.cause = error;
+    return normalized;
+  }
+
+  return error;
+}
+
+async function sendMail(message) {
+  const transporter = createTransporter();
+
+  try {
+    return await transporter.sendMail(message);
+  } catch (error) {
+    throw normalizeMailerError(error);
+  }
 }
 
 async function sendWelcomeTestEmail({ toEmail, requestedBy }) {
-  const transporter = createTransporter();
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
   const by = requestedBy || 'Admin';
@@ -74,7 +115,7 @@ async function sendWelcomeTestEmail({ toEmail, requestedBy }) {
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  const info = await sendMail({
     from,
     to: toEmail,
     subject,
@@ -86,7 +127,6 @@ async function sendWelcomeTestEmail({ toEmail, requestedBy }) {
 }
 
 async function sendEmailChangeVerificationEmail({ toEmail, code, requestedBy, expiresInMinutes = 10 }) {
-  const transporter = createTransporter();
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
   const by = requestedBy || 'Smiles Dental Hub';
@@ -119,7 +159,7 @@ async function sendEmailChangeVerificationEmail({ toEmail, code, requestedBy, ex
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  const info = await sendMail({
     from,
     to: toEmail,
     subject,
@@ -131,7 +171,6 @@ async function sendEmailChangeVerificationEmail({ toEmail, code, requestedBy, ex
 }
 
 async function sendStaffOnboardingVerificationEmail({ toEmail, code, requestedBy, expiresInMinutes = 10 }) {
-  const transporter = createTransporter();
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
   const by = requestedBy || 'Smiles Dental Hub';
@@ -165,7 +204,7 @@ async function sendStaffOnboardingVerificationEmail({ toEmail, code, requestedBy
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  const info = await sendMail({
     from,
     to: toEmail,
     subject,
@@ -176,11 +215,18 @@ async function sendStaffOnboardingVerificationEmail({ toEmail, code, requestedBy
   return info;
 }
 
-async function sendPatientRegistrationVerificationEmail({ toEmail, code, requestedBy, expiresInMinutes = 10, changes = [] }) {
-  const transporter = createTransporter();
+async function sendPatientRegistrationVerificationEmail({
+  toEmail,
+  code,
+  requestedBy,
+  expiresInMinutes = 10,
+  changes = [],
+  mode = 'registration',
+}) {
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
   const by = requestedBy || 'Smiles Dental Hub';
+  const isUpdateFlow = mode === 'update';
 
   const validChanges = Array.isArray(changes)
     ? changes.filter((c) => c && typeof c.label === 'string')
@@ -217,11 +263,15 @@ async function sendPatientRegistrationVerificationEmail({ toEmail, code, request
       </div>`
     : '';
 
-  const subject = 'Smiles Dental Hub - Patient Record Update Verification';
+  const subject = isUpdateFlow
+    ? 'Smiles Dental Hub - Patient Record Update Verification'
+    : 'Smiles Dental Hub - New Patient Record Verification';
   const text = [
     'Hello,',
     '',
-    'A patient record update in Smiles Dental Hub is waiting for your email confirmation.',
+    isUpdateFlow
+      ? 'A patient record update in Smiles Dental Hub is waiting for your email confirmation.'
+      : 'A new patient record in Smiles Dental Hub is waiting for your email confirmation.',
     changesTextBlock,
     '',
     `Verification code: ${code}`,
@@ -229,28 +279,36 @@ async function sendPatientRegistrationVerificationEmail({ toEmail, code, request
     '',
     `Requested by: ${by}`,
     '',
-    'Give this code to the clinic staff to authorize the update.',
+    isUpdateFlow
+      ? 'Give this code to the clinic staff to authorize the update.'
+      : 'Give this code to the clinic staff to authorize the new patient record.',
     'If you did not request this, you can ignore this email.',
   ].join('\n');
 
   const html = `
     <div style="font-family:Arial,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">
       <p>Hello,</p>
-      <p>A patient record update in <strong>Smiles Dental Hub</strong> is waiting for your email confirmation.</p>
+      <p>${isUpdateFlow
+        ? 'A patient record update in <strong>Smiles Dental Hub</strong> is waiting for your email confirmation.'
+        : 'A new patient record in <strong>Smiles Dental Hub</strong> is waiting for your email confirmation.'}</p>
       ${changesHtmlBlock}
-      <p>Enter the verification code below to authorize these changes:</p>
+      <p>${isUpdateFlow
+        ? 'Enter the verification code below to authorize these changes:'
+        : 'Enter the verification code below to authorize this new patient record:'}</p>
       <div style="margin:20px 0;padding:16px;border-radius:12px;background:#f4fafb;border:1px solid #d7e8ef;text-align:center">
         <div style="font-size:12px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#4c6b7a;margin-bottom:6px">Verification Code</div>
         <div style="font-size:32px;font-weight:800;letter-spacing:0.18em;color:#0f6f96">${String(code)}</div>
       </div>
       <p><strong>This code expires in ${expiresInMinutes} minutes.</strong></p>
       <p style="margin-top:16px"><strong>Requested by:</strong> ${String(by)}</p>
-      <p style="margin-top:16px">Give this code to the clinic staff to authorize the update to your patient record.</p>
+      <p style="margin-top:16px">${isUpdateFlow
+        ? 'Give this code to the clinic staff to authorize the update to your patient record.'
+        : 'Give this code to the clinic staff to authorize creation of your new patient record.'}</p>
       <p style="margin-top:8px;color:#dc2626"><strong>If you did not request this change, please contact the clinic immediately.</strong></p>
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  const info = await sendMail({
     from,
     to: toEmail,
     subject,
@@ -262,7 +320,6 @@ async function sendPatientRegistrationVerificationEmail({ toEmail, code, request
 }
 
 async function sendPasswordResetVerificationEmail({ toEmail, code, expiresInMinutes = 10 }) {
-  const transporter = createTransporter();
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
 
@@ -292,7 +349,7 @@ async function sendPasswordResetVerificationEmail({ toEmail, code, expiresInMinu
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  const info = await sendMail({
     from,
     to: toEmail,
     subject,
@@ -304,7 +361,6 @@ async function sendPasswordResetVerificationEmail({ toEmail, code, expiresInMinu
 }
 
 async function sendFailedLoginAlertEmail({ toEmail, attemptedAt, failedAttempts = 4 }) {
-  const transporter = createTransporter();
   const fromName = config.smtpFromName || 'Smiles Dental Hub';
   const from = `"${fromName}" <${config.smtpFromEmail}>`;
   const formattedAttemptedAt = formatEmailTimestamp(attemptedAt || new Date());
@@ -339,7 +395,7 @@ async function sendFailedLoginAlertEmail({ toEmail, attemptedAt, failedAttempts 
     </div>
   `;
 
-  const info = await transporter.sendMail({
+  const info = await sendMail({
     from,
     to: toEmail,
     subject,
